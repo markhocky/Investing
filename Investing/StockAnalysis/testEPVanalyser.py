@@ -40,9 +40,11 @@ class Test_EstimateIncomeAndExpenses(unittest.TestCase):
         self.cash.capex_other = pandas.Series([102.0, 3000.0, 0.0, 0.0, 0.0], index = years)
         self.cash.asset_sales = pandas.Series([0.0, 20.0, 0.0, 0.0, 52.0], index = years)
         self.cash.debt_reduction = pandas.Series([168.0, 358.0, 301.0, 449.5, 277.0], index = years)
+        self.cash.change_in_working_capital = pandas.Series([1680.0, -1358.0, 301.0, 4492.5, -2277.0], index = years)
         
         self.lease_financing = pandas.Series([737.4, -15.0, 730.7, 0.0, 0.0], index = years)
         self.adjusted_earnings = pandas.Series([11150.46, 7893.12, 5666.38, 12404.10, 19816.02], index = years)
+        self.asset_maintenance = pandas.Series([1850.0, 1658.0, 650.0, 1100.0, 980.0], index = years)
 
         self.financials = FinanceAnalyst(self.income, self.balance, self.cash)
 
@@ -91,8 +93,7 @@ class Test_EstimateIncomeAndExpenses(unittest.TestCase):
 
     def test_NetPPEMaintenanceCashflows(self):
         self.financials.lease_financing = Mock(return_value = self.lease_financing)
-        PPE_change = self.financials.series_diff(self.balance.PPE)
-        PPE_change[PPE_change < 0] = 0
+        PPE_change = self.financials.PPE_change_net_sales()
         net_cash_capex = self.financials.asset_capex()
         expected = self.lease_financing + net_cash_capex - PPE_change
         actual = self.financials.PPE_maintenance()
@@ -109,6 +110,7 @@ class Test_EstimateIncomeAndExpenses(unittest.TestCase):
         intangibles_change = self.financials.series_diff(self.balance.other_intangibles)
         intangibles_change[intangibles_change < 0] = 0
         capex_ex_growth = self.cash.capex_other - intangibles_change
+        capex_ex_growth[capex_ex_growth < 0] = 0
         intangibles_spend_pct = capex_ex_growth / self.balance.other_intangibles
         expected = self.balance.other_intangibles * intangibles_spend_pct.mean()
         actual = self.financials.intangibles_maintenance()
@@ -149,8 +151,9 @@ class Test_EstimateIncomeAndExpenses(unittest.TestCase):
         self.assertTrue(actual.equals(expected))
 
     def test_CalculateAdjustedEarnings(self):
+        self.financials.asset_maintenance = Mock(return_value = self.asset_maintenance)
         EBIT = self.financials.EBIT()
-        expected = (EBIT + self.financials.net_unusuals()) * 0.7 + self.financials.non_cash_expenses() - self.financials.asset_maintenance()
+        expected = (EBIT + self.financials.net_unusuals()) * 0.7 + self.financials.non_cash_expenses() - self.asset_maintenance
         adj_earnings = self.financials.ownerEarnings()
         self.assertTrue(adj_earnings.equals(expected))
 
@@ -272,20 +275,20 @@ class Test_CalculateWACC(unittest.TestCase):
         self.assertEqual(self.analyser.loss_probability(optF), expected_prob)
 
     def test_LeveragedEquityCost(self):
-        acceptable_loss_prob = 0.05
-        self.analyser.acceptable_loss_prob = acceptable_loss_prob
         prob_at_opt = 0.301
         prob_at_act = 0.016
-        leverage_ratio = prob_at_act / (sum([acceptable_loss_prob, prob_at_opt]) / 2)
-        self.assertAlmostEqual(leverage_ratio, 0.09, places = 2)
+        loss_prob_mock = Mock()
+        loss_prob_mock.side_effect = [prob_at_opt, prob_at_act]
+        self.analyser.loss_probability = loss_prob_mock
+        leverage_ratio = prob_at_act / prob_at_opt
         equity_base_cost = 0.09
         equity_premium = 0.11
         self.analyser.equity_premium = equity_premium
         self.analyser.equity_base_cost = equity_base_cost
         expected_cost = equity_base_cost + leverage_ratio * equity_premium
-        equity_cost = self.analyser.equity_cost(prob_at_opt, prob_at_act)
+        equity_cost = self.analyser.equity_cost()
         self.assertEqual(equity_cost, expected_cost)
-        self.assertAlmostEqual(equity_cost, 0.100, places = 3)
+        self.assertAlmostEqual(equity_cost, 0.096, places = 3)
         
 
 class Test_GrowthMultiple(unittest.TestCase):

@@ -129,18 +129,19 @@ def saveAnalysisToExcel(ticker):
 
 class Reporter():
     
-    def __init__(self, ticker):
+    def __init__(self, ticker, analyse = True):
         self.ticker = ticker
-        self.financials = buildFinancialAnalyst(ticker)
-        self.EPVanalyser = EPVanalyser(self.financials)
-        self.price_analyser = buildPriceAnalyser(ticker)
-        self.current_price = YahooDataDownloader("").current_price(ticker)
         self._index = None
         self._maintenance = None
         self._earnings = None
         self._EPV = None
         self._prices = None
         self._values = None
+        if analyse:
+            self.financials = buildFinancialAnalyst(ticker)
+            self.EPVanalyser = EPVanalyser(self.financials)
+            self.price_analyser = buildPriceAnalyser(ticker)
+            self.current_price = YahooDataDownloader("").current_price(ticker)
 
 
     @property

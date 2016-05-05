@@ -9,16 +9,17 @@ class Test_Reporter(unittest.TestCase):
         self.ticker = "GNG"
         self.years = ["2015", "2014", "2013", "2012", "2011"]
         self.reporter = Reporter(self.ticker)
+        self.reporter.index = self.years
 
     def test_ReporterBuildsHeaderRow(self):
         expected = pandas.Series(["*****"] * len(self.years), index = self.years)
         expected.name = "Heading"
-        self.assertTrue(expected.equals(self.reporter.heading("Heading", self.years)))
+        self.assertTrue(expected.equals(self.reporter.heading("Heading")))
 
     def test_PadRow(self):
         price = 0.70
         expected = pandas.Series([price] + ["-"] * (len(self.years) - 1), index = self.years)
-        row = self.reporter.pad_row(price, self.years)
+        row = self.reporter.pad_row(price)
         self.assertTrue(row.equals(expected))
 
 
@@ -35,7 +36,7 @@ class Test_EPVreporting(unittest.TestCase):
         self.analyser.EPV_cyclic = Mock(return_value = 0)
         self.analyser.EPV_diluted = Mock(return_value = 0)
 
-        self.reporter = Reporter("test")
+        self.reporter = Reporter("test", analyse = False)
         self.reporter.EPVanalyser = self.analyser
 
     def test_EPVtable(self):
