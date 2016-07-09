@@ -1,7 +1,3 @@
-'''
-Web Scraper for quotes.wsj.com
-'''
-
 import pandas
 import math
 import datetime
@@ -11,9 +7,10 @@ import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 from DataHandling.Downloads import Storage, StockFinancialsResource, WSJscraper, XLSio, YahooDataDownloader, MissingStatementEntryError, InsufficientDataError
 
+from multiprocessing import Process, Queue, Pool
+
 
 # TODO - REFINEMENTS
-# WACC adjusted often goes to cost of debt. Very sensitive to optF vs actF
 # Growth multiple doesn't seem to work well. Sometimes is higher than appears justified.
 # Add stock blacklist to avoid cycling through those with errors every time.
 
@@ -22,13 +19,9 @@ from DataHandling.Downloads import Storage, StockFinancialsResource, WSJscraper,
 # Statement can create this object on get_row
 
 # TODO - FIXES
-# Negative mean return throws "math range error" on loss_probability with optF
-# Check working capital changes for CSR
-# Check PPE maintenance for AVJ
 # Improve error handling in storeValuationSummaryBrief
 # Apply appropriate corrections when not all years have reported values.
 # Apply to: Capital Base, Total Assets
-# Check Maintenance Capex results for SGF and VRT
 #
 # Errors:
 # Account for USD reported accounts e.g. RMD
@@ -42,7 +35,8 @@ from DataHandling.Downloads import Storage, StockFinancialsResource, WSJscraper,
 
 # TODO - FEATURES
 # Add Book Valuations.
-# Update valuations based on latest prices only.
+# DONE - Parallel processing of valuations.
+# DONE - Update valuations based on latest prices only.
 # Analysis of financial stocks - Banks and Insurance.
 # Add data from analyst forecast earnings.
 # Add data from competitors and industry.
@@ -126,6 +120,66 @@ def saveAnalysisToExcel(ticker):
     investing.to_excel(writer, "Cashflow", startrow = len(operating) + 1)
     financing.to_excel(writer, "Cashflow", startrow = len(operating) + len(investing) + 2)
     writer.save()
+
+def getOneLineSummary(ticker):
+    try:
+        reporter = Reporter(ticker)
+        result = reporter.oneLineValuation()
+    except MissingStatementEntryError as E:
+        result = "Error valuing {0}: {1}".format(ticker, E.message)
+    except InsufficientDataError as E:
+        result = "Error valuing {0}: {1}".format(ticker, E.message)
+    except Exception as E:
+        result = "Error valuing {0}: {1}".format(ticker, E.message)
+    
+    return result
+
+def parallelSummary(tickers = None):
+    store = Storage()
+    if tickers is None:
+        xls = XLSio(store)
+        xls.loadWorkbook("StockSummary")
+        xls.table = xls.table[xls.table["P/E Ratio (TTM)"].notnull()]
+        tickers = xls.getTickers()
+    
+    pool = Pool(processes = 8)
+    all_results = pool.map(getOneLineSummary, tickers)
+    errors = []
+    results = []
+
+    for result in all_results:
+        if type(result) is pandas.Series:
+            results.append(result)
+        else:
+            errors.append(result)
+
+    results = pandas.concat(results, axis = 1).T
+
+    results.to_excel(store.excel("ValuationSummary"))
+    print(str(len(errors)) + " Failed")
+    print(str(len(results)) + " Succeeded")
+
+    return errors
+
+def updatePrices(date = None):
+    store = Storage()
+    if date is None:
+        valuations = store.list_files(store.excel(), "Valuation")
+        dates = [val[-13:-5] for val in valuations]
+        date = max(dates)
+    summary = pandas.read_excel(store.excel("ValuationSummary" + date), index_col = 0)
+    yahoo = YahooDataDownloader("")
+    new_prices = pandas.Series([yahoo.current_price(ticker) for ticker in summary.index], index = summary.index)
+    old_prices = summary["Current Price"]
+    values = summary.loc[:, "Adjusted Value":"Dilution Value"]
+    new_values = (values + 1).multiply(old_prices / new_prices, axis = "rows") - 1
+    summary.loc[:, "Adjusted Value":"Dilution Value"] = new_values
+    summary["Current Price"] = new_prices
+    summary["Current PE"] = summary["Current EPS"] / summary["Current Price"]
+    summary.to_excel(store.excel("ValuationSummary20160622"))
+    return summary
+
+
 
 class Reporter():
     
@@ -212,10 +266,11 @@ class Reporter():
         table["PPE maintenance"] = self.financials.PPE_maintenance()
         table["Intangibles maintenance"] = self.financials.intangibles_maintenance()
         table["Working capital"] = self.financials.working_capital_requirements()
-        table["Total maintenance"] = self.financials.cash_expenses()
+        table["Total maintenance"] = self.financials.maintenance_expense()
+        table["Capital injections"] = self.financials.capital_injections()
         table["Expended Dep."] = self.financials.expended_depreciation()
-        table["Asset maintenance"] = self.financials.asset_maintenance()
         table["Dep and Amor"] = self.financials.non_cash_expenses()
+        table["Applied cash expense"] = self.financials.cash_expenses()
         return table.round(1)
 
     def earnings_table(self):
@@ -271,22 +326,49 @@ class Reporter():
         else:
             summary["Current Price"] = self.current_price
         summary["Current EPS"] = self.EPS[0]
-        valuation = self.valuation_pct()
-        valuation = self.append_label(valuation, "Value")
-        summary = summary.append(valuation)
-        summary["Current PE"] = summary["Current Price"] / summary["Current EPS"]
-        PE_current = self.PE.iloc[0]
-        PE_current = self.append_label(PE_current, "PE Current Yr")
-        summary = summary.append(PE_current)
-        summary["Average PE 5yr"] = self.PE.Average.mean()
-        summary["High PE 5yr"] = self.PE.High.max()
-        summary["Low PE 5yr"] = self.PE.Low.min()
-        summary["Std Dev PE 5yr"] = self.PE["Std Dev"].mean()
         summary["Current Div"] = self.DPS[0]
         summary["Average Div"] = self.DPS.mean()
+        summary = summary.append(self.valuationMetrics_table().iloc[0])
+        valuation = self.valuation_pct().round(3)
+        valuation = self.append_label(valuation, "Value")
+        summary = summary.append(valuation)
+        summary = summary.append(self.PE_ranges().round(1))
         summary.name = self.ticker
-        summary[summary.notnull()] = summary[summary.notnull()].round(3)
-        return summary.round(3)
+        return summary
+
+    def PE_ranges(self):
+        PE_summary = pandas.Series(dtype = float)
+        PE_summary["Current PE"] = self.current_price / self.EPS[0]
+        PE_current = self.PE.iloc[0]
+        PE_current = self.append_label(PE_current, "PE Current Yr")
+        PE_summary = PE_summary.append(PE_current)
+        PE_summary["Average PE 5yr"] = self.PE.Average.mean()
+        PE_summary["High PE 5yr"] = self.PE.High.max()
+        PE_summary["Low PE 5yr"] = self.PE.Low.min()
+        PE_summary["Std Dev PE 5yr"] = self.PE["Std Dev"].mean()
+        return PE_summary
+
+    def LeibowitzPEsummary(self):
+        table = pandas.DataFrame()
+        mean_rtn = self.EPVanalyser.ROIC_mean()
+        capital_cost = self.EPVanalyser.WACC()
+        growth_multiple = self.EPVanalyser.growth_multiple().iloc[0]
+        franchise_factor = (mean_rtn - capital_cost) / (capital_cost * mean_rtn)
+        theoretical_PE = (1 / capital_cost) + franchise_factor * growth_multiple
+        book_value = self.EPVanalyser.book_value().iloc[0]
+        franchise_value = (1 / capital_cost) * (mean_rtn - capital_cost) * (growth_multiple * book_value)
+
+        table["Mean Return (%)"] = self.pad_row(self.format_pct(mean_rtn))
+        table["Franchise Return (%)"] = self.pad_row(self.format_pct(mean_rtn))
+        table["WACC base (%)"] = self.pad_row(self.format_pct(self.EPVanalyser.WACC_base()))
+        table["WACC adj. (%)"] = self.pad_row(self.format_pct(capital_cost))
+        table["Growth mult."] = self.pad_row(self.format_ratio(growth_multiple))
+        table["Franchise Factor (FF)"] = self.pad_row(self.format_ratio(franchise_factor))
+        table["Theoretical PE"] = self.pad_row(self.format_ratio(theoretical_PE))
+        table["Book Value ($)"] = self.pad_row(self.format_ratio(book_value))
+        table["Franchise Value ($)"] = self.pad_row(self.format_ratio(franchise_value))
+
+        return table
 
     def append_label(self, series, label):
         series.index = [" ".join([ix, label]) for ix in series.index]
@@ -366,6 +448,9 @@ class EPVanalyser():
     def dilution(self):
         return 1 - self.financials.dilutionGrowth()
 
+    def book_value(self):
+        return self.per_share(self.financials.shareholdersEquity())
+
     def ROIC(self):
         return self.owner_earnings() / self.financials.investedCapital()
 
@@ -381,7 +466,7 @@ class EPVanalyser():
         return (ROIC - ROIC_trend).std()
 
     def optF_theoretical(self):
-        min_denom = 0.01
+        min_denom = 0.001
         adj_frac = 1.0 / 6.0
         min_F = 0.001
         mean = self.ROIC_mean()
@@ -400,7 +485,7 @@ class EPVanalyser():
         std = self.ROIC_std()
         three_sigma_loss = mean - 3 * std
         if three_sigma_loss >= 0:
-            optF = 10
+            optF = 10.0
         else:
             optF = -1 / three_sigma_loss
         return optF
@@ -409,17 +494,17 @@ class EPVanalyser():
         return min([self.optF_theoretical(), self.optF_simplified(), self.optF_max_allowable_loss()])
 
     def actF(self):
-        current_assets = self.financials.totalAssets()[0]
-        current_debt = self.financials.totalDebt()[0]
+        # Actual leverage is calculated as if all free cash is used to pay down debt.
+        assets = self.financials.totalAssets()[0]
+        debt = self.financials.totalDebt()[0]
         net_cash = self.financials.netCash()[0]
-        net_debt = current_debt - net_cash
-        return current_assets / (current_assets - net_debt)
+        return (assets - net_cash) / (assets - debt)
 
     def WACC(self, equity_cost = None):
         if equity_cost is None:
             equity_cost = self.equity_cost()
         optF = self.optF()
-        return equity_cost * (1 / optF) + self.debt_cost * ((optF - 1) / optF)
+        return equity_cost * (1.0 / optF) + self.debt_cost * ((optF - 1.0) / optF)
 
     def WACC_base(self):
         equity_cost = self.equity_base_cost + self.equity_premium
@@ -428,12 +513,19 @@ class EPVanalyser():
     def loss_probability(self, optF):
         mean_rtn = self.ROIC_mean()
         std_rtn = self.ROIC_std()
-        return math.exp((-2.0 * optF * mean_rtn * self.acceptable_DD) / (optF * std_rtn) ** 2)
+        try:
+            probability = math.exp((-2.0 * optF * mean_rtn * self.acceptable_DD) / (optF * std_rtn) ** 2)
+        except OverflowError:
+            probability = 1
+        return probability
 
     def equity_cost(self):
         prob_opt = self.loss_probability(self.optF())
         prob_act = self.loss_probability(self.actF())
-        leverage_ratio = prob_act / prob_opt
+        if prob_opt > 0.05:
+            leverage_ratio = 1
+        else:
+            leverage_ratio = prob_act / prob_opt
         return self.equity_base_cost + leverage_ratio * self.equity_premium
 
     def growth_multiple(self, WACC = None, invest_pct = None, mean_rtn = None):
@@ -444,20 +536,38 @@ class EPVanalyser():
         if mean_rtn is None:
             mean_rtn = self.ROIC_mean()
         # Ref: "Value Investing" Greenwald, Kahn et al pg 143
-        # Note invest_pct / WACC limited to 0.75 to avoid wacky growth multiples.
+        # Note numerous adjustments are conducted to make sure the multiple is greater than 0.
+        # These are required as the calculation doesn't work well when invest_pct or mean_rtn
+        # are negative, or when mean_rtn is less than WACC.
+        # The calculation attempts to give multiples between 0 and 1, when growth is bad.
+        # Note that negative growth multiple is not desirable, as this would give positive EPV
+        # when multiplied with negative earnings.
         invest_WACC_ratio = invest_pct / WACC
         if isinstance(invest_WACC_ratio, pandas.Series):
             invest_WACC_ratio[invest_WACC_ratio > 0.75] = 0.75
+            invest_WACC_ratio[(WACC > mean_rtn) & (invest_WACC_ratio < 0)] = 0.75
         else:
             invest_WACC_ratio = min(invest_WACC_ratio, 0.75)
+            if WACC > mean_rtn and invest_WACC_ratio < 0:
+                invest_WACC_ratio = 0.75
         # Ratio of WACC to Return adjusted for neg return conditions.
-        WACC_rtn_ratio = abs(WACC / mean_rtn)
-        if isinstance(WACC_rtn_ratio, pandas.Series):
-            WACC_rtn_ratio[WACC_rtn_ratio > 10] = 10
+        if mean_rtn == 0:
+            WACC_rtn_ratio = 2
+        elif mean_rtn > 0:
+            WACC_rtn_ratio = WACC / mean_rtn
         else:
-            WACC_rtn_ratio = min(WACC_rtn_ratio, 10)
+            WACC_rtn_ratio = max(abs((WACC - mean_rtn) / mean_rtn), 1.5)
 
-        return (1 - invest_WACC_ratio * WACC_rtn_ratio) / (1 - invest_WACC_ratio)
+        if WACC_rtn_ratio > 1:
+            # If cost of capital (WACC) is greater than mean_rtn, then growth is bad.
+            # We want to return a multiple less than 1.
+            WACC_rtn_ratio = 1 / WACC_rtn_ratio
+            multiple = 1 / ((1 - invest_WACC_ratio * WACC_rtn_ratio) / (1 - invest_WACC_ratio))
+        else:
+            # The normal case
+            multiple = (1 - invest_WACC_ratio * WACC_rtn_ratio) / (1 - invest_WACC_ratio)
+
+        return multiple
 
     def EPV(self, earnings, WACC, growth, dilution):
         EPV_base = (earnings / WACC) * growth
@@ -549,6 +659,9 @@ class FinanceAnalyst():
     def totalDebt(self):
         return self.balance.debt
 
+    def shareholdersEquity(self):
+        return self.balance.common_equity
+
     def dividendsCommon(self):
         return self.cashflow.dividends_common
 
@@ -579,7 +692,7 @@ class FinanceAnalyst():
     def ownerEarnings(self):
         EBIT_avg_unusuals = self.EBIT() + self.net_unusuals()
         earnings_after_tax = EBIT_avg_unusuals * (1 - self.tax_rate)
-        return earnings_after_tax + self.non_cash_expenses() - self.asset_maintenance()
+        return earnings_after_tax + self.non_cash_expenses() - self.cash_expenses()
 
     def EBIT(self):
         return self.income.pretax - self.income.net_interest
@@ -592,6 +705,29 @@ class FinanceAnalyst():
         return self.income.DandA
 
     def cash_expenses(self):
+        # Refer Cash Expense Analysis - 20160514.xlsx
+        acceptable_range = 0.3
+        avg_DandA = pandas.DataFrame([self.income.DandA, self.expended_depreciation()]).mean()
+        total_maintenance = self.maintenance_expense()
+        total_maint_in_range = ((total_maintenance > self.expended_depreciation() * (1 - acceptable_range)) 
+                                & (total_maintenance < self.income.DandA * (1 + acceptable_range)))
+        if not any(total_maint_in_range):
+            total_maint_ratio = 1
+        else:
+            total_maint_ratio = total_maintenance[total_maint_in_range].mean() / avg_DandA[total_maint_in_range].mean()
+
+        capital_maintenance = self.capital_injections()
+        capital_maint_in_range = ((capital_maintenance > self.expended_depreciation() * (1 - acceptable_range)) 
+                                & (capital_maintenance < self.income.DandA * (1 + acceptable_range)))
+        if not any(capital_maint_in_range):
+            capital_maint_ratio = 1
+        else:
+            capital_maint_ratio = capital_maintenance[capital_maint_in_range].mean() / avg_DandA[capital_maint_in_range].mean()
+
+        cash_expense = avg_DandA * (total_maint_ratio + capital_maint_ratio) / 2
+        return cash_expense
+
+    def maintenance_expense(self):
         return self.PPE_maintenance() + self.intangibles_maintenance() + self.working_capital_requirements()
 
     def dividend_rate(self):
@@ -621,19 +757,21 @@ class FinanceAnalyst():
     def asset_capex(self):
         return self.cashflow.capex_assets
 
-    def asset_maintenance(self):
-        retained_earnings = self.income.net_to_common - self.cashflow.dividends_total
+    def capital_injections(self):
         common_equity = self.balance.common_equity
         equity_increase = self.series_diff(common_equity)
-        stock_par = self.balance.common_carry_value
-        added_funds = self.series_diff(stock_par)
-        reserves = self.balance.appropriated_reserves
-        added_reserves = self.series_diff(reserves)
-        retained_and_added = retained_earnings + added_funds + added_reserves
+        retained_and_added = self.retained_and_added_funds()
         additional_maintenance = retained_and_added - equity_increase
         mean_additional = additional_maintenance[:-1].mean()
         return self.income.DandA + mean_additional
 
+    def retained_and_added_funds(self):
+        retained_earnings = self.income.net_to_common - self.cashflow.dividends_total
+        stock_par = self.balance.common_carry_value
+        added_funds = self.series_diff(stock_par)
+        reserves = self.balance.appropriated_reserves
+        added_reserves = self.series_diff(reserves)
+        return retained_earnings + added_funds + added_reserves
 
     def PPE_maintenance(self):
         investment = self.lease_financing() + self.asset_capex()

@@ -139,10 +139,10 @@ class Test_EstimateIncomeAndExpenses(unittest.TestCase):
         actual = self.financials.non_cash_expenses()
         self.assertTrue(actual.equals(expected))
 
-    def test_CashExpenses(self):
+    def test_TotalMaintenanceExpense(self):
         expected = (self.financials.PPE_maintenance() + 
             self.financials.intangibles_maintenance() + self.financials.working_capital_requirements())
-        actual = self.financials.cash_expenses()
+        actual = self.financials.maintenance_expense()
         self.assertTrue(actual.equals(expected))
 
     def test_CalculateEBIT(self):
