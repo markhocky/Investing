@@ -49,8 +49,8 @@ class Test_BalanceSheet(unittest.TestCase):
     
     def setUp(self):
         data_folder = "..\\testData\\"
-        self.asset_sheet = pandas.read_pickle(data_folder + "GNG\\GNGassets.pkl")
-        self.liabilities = pandas.read_pickle(data_folder + "GNG\\GNGliabilities.pkl")
+        self.asset_sheet = pandas.read_pickle(data_folder + "GNG\\Financials\\GNGassets.pkl")
+        self.liabilities = pandas.read_pickle(data_folder + "GNG\\Financials\\GNGliabilities.pkl")
         years = ["2015", "2014", "2013", "2012", "2011"]
 
         self.PPE = pandas.Series([3514.6, 2040.9, 2672.0, 2191.9, 1972.6], index = years)
@@ -79,7 +79,7 @@ class Test_IncomeStatement(unittest.TestCase):
 
     def setUp(self):
         data_folder = "..\\testData\\"
-        self.income_sheet = pandas.read_pickle(data_folder + "GNG\\GNGincome.pkl")
+        self.income_sheet = pandas.read_pickle(data_folder + "GNG\\Financials\\GNGincome.pkl")
         self.financial_income = pandas.read_pickle(data_folder + "CCP\\CCPincome.pkl")
         years = ["2015", "2014", "2013", "2012", "2011"]
 
@@ -123,9 +123,9 @@ class Test_CashflowStatement(unittest.TestCase):
 
     def setUp(self):
         data_folder = "..\\testData\\"
-        self.operating = pandas.read_pickle(data_folder + "GNG\\GNGoperating.pkl")
-        self.investing = pandas.read_pickle(data_folder + "GNG\\GNGinvesting.pkl")
-        self.financing = pandas.read_pickle(data_folder + "GNG\\GNGfinancing.pkl")
+        self.operating = pandas.read_pickle(data_folder + "GNG\\Financials\\GNGoperating.pkl")
+        self.investing = pandas.read_pickle(data_folder + "GNG\\Financials\\GNGinvesting.pkl")
+        self.financing = pandas.read_pickle(data_folder + "GNG\\Financials\\GNGfinancing.pkl")
         years = ["2015", "2014", "2013", "2012", "2011"]
 
         self.capex_assets = pandas.Series([1797.3, 43.9, 724.1, 908.3, 1081.1], index = years)

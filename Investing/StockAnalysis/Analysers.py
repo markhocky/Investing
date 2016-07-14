@@ -5,7 +5,7 @@ import warnings
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
-from DataHandling.Downloads import Storage, StockFinancialsResource, WSJscraper, XLSio, YahooDataDownloader, MissingStatementEntryError, InsufficientDataError
+from DataHandling.Downloads import Storage, Financials, PriceHistory, WSJscraper, XLSio, WebDownloader, MissingStatementEntryError, InsufficientDataError
 
 from multiprocessing import Process, Queue, Pool
 
@@ -45,12 +45,12 @@ from multiprocessing import Process, Queue, Pool
 def retrieveOverviewData(storage_dir, headings = None):
     store = Storage(storage_dir)
     xls = XLSio(store)
-    scraper = WSJscraper(store)
+    scraper = WSJscraper()
     xls.loadWorkbook("ASXListedCompanies")
     tickers = xls.getTickers()
     new_data = {}
     for ticker in tickers:
-        scraper.load_overview(ticker)
+        scraper.load_overview(ticker, store)
         try:
             new_data[ticker] = scraper.keyStockData()
         except Exception:
@@ -91,17 +91,19 @@ def storeValuationSummaryBrief(tickers = None):
     print(str(len(summary)) + " Succeeded")
     return errors
 
-def buildFinancialAnalyst(ticker, storage_dir = "D:\\Investing\\Data"):
-    resource = StockFinancialsResource(Storage(storage_dir))
-    income = IncomeStatement(resource.getFinancials(ticker, "income"))
-    balance = BalanceSheet(resource.getFinancials(ticker, "assets"), resource.getFinancials(ticker, "liabilities"))
-    cashflow = CashflowStatement(resource.getFinancials(ticker, "operating"), resource.getFinancials(ticker, "investing"), resource.getFinancials(ticker, "financing"))
+def buildFinancialAnalyst(ticker, period = "annual", storage_dir = "D:\\Investing\\Data"):
+    store = Storage(storage_dir)
+    resource = store.load(Financials(ticker, period))
+    income = IncomeStatement(**resource.statements["income"])
+    balance = BalanceSheet(**resource.statements["balance"])
+    cashflow = CashflowStatement(**resource.statements["cashflow"])
     return FinanceAnalyst(income, balance, cashflow)
 
 def buildPriceAnalyser(ticker, storage_dir = "D:\\Investing\\Data"):
     store = Storage(storage_dir)
-    prices = pandas.read_pickle(store.yahoo(ticker))
-    return PriceAnalyser(prices) 
+    price_history = PriceHistory(ticker)
+    price_history = store.load(price_history)
+    return PriceAnalyser(**price_history.data) 
 
 def saveAnalysisToExcel(ticker):
     results = Reporter(ticker)
@@ -168,15 +170,15 @@ def updatePrices(date = None):
         dates = [val[-13:-5] for val in valuations]
         date = max(dates)
     summary = pandas.read_excel(store.excel("ValuationSummary" + date), index_col = 0)
-    yahoo = YahooDataDownloader("")
-    new_prices = pandas.Series([yahoo.current_price(ticker) for ticker in summary.index], index = summary.index)
+    download = WebDownloader()
+    new_prices = pandas.Series([download.currentPrice(ticker) for ticker in summary.index], index = summary.index)
     old_prices = summary["Current Price"]
     values = summary.loc[:, "Adjusted Value":"Dilution Value"]
     new_values = (values + 1).multiply(old_prices / new_prices, axis = "rows") - 1
     summary.loc[:, "Adjusted Value":"Dilution Value"] = new_values
     summary["Current Price"] = new_prices
     summary["Current PE"] = summary["Current EPS"] / summary["Current Price"]
-    summary.to_excel(store.excel("ValuationSummary20160622"))
+    summary.to_excel(store.excel("ValuationSummary" + date))
     return summary
 
 
@@ -195,7 +197,7 @@ class Reporter():
             self.financials = buildFinancialAnalyst(ticker)
             self.EPVanalyser = EPVanalyser(self.financials)
             self.price_analyser = buildPriceAnalyser(ticker)
-            self.current_price = YahooDataDownloader("").current_price(ticker)
+            self.current_price = WebDownloader().currentPrice(ticker)
 
 
     @property
@@ -826,14 +828,14 @@ class FinanceAnalyst():
         capital_base = self.balance.PPE + self.balance.intangibles
         return self.series_fillzeroes(capital_base)
 
-    def series_trend(self, series, years = None):
-        if years is None:
-            years = series.index
+    def series_trend(self, series, dates = None):
+        if dates is None:
+            dates = [makeDatetime(date) for date in series.index]
         lm = LinearRegression()
-        years_train = np.array([[float(year)] for year in series.index])
-        lm.fit(years_train, series.values)
-        years_predict = [[float(year)] for year in years]
-        return pandas.Series(lm.predict(years_predict), index = years)
+        dates_train = np.array([[makeDatetime(date).toordinal()] for date in series.index])
+        lm.fit(dates_train, series.values)
+        dates_predict = [[date.toordinal()] for date in dates]
+        return pandas.Series(lm.predict(dates_predict), index = series.index)
 
     def series_diff(self, series):
         delta = series.diff(periods = -1)
@@ -882,9 +884,9 @@ class Statement():
 
 class IncomeStatement(Statement):
 
-    def __init__(self, income_sheet):
-        self.income_sheet = income_sheet
-        self.units = self.get_units(income_sheet)
+    def __init__(self, income):
+        self.income_sheet = income
+        self.units = self.get_units(income)
 
 
     @property
@@ -1048,36 +1050,52 @@ class PriceAnalyser():
     def __init__(self, prices):
         self.prices = prices
 
-    def prices_FY(self, year):
-        FY_start = datetime.date(year - 1, 07, 01)
-        FY_end = datetime.date(year, 06, 30)
+    def prices_FY(self, date):
+        date = makeDatetime(date)
+        FY_start = datetime.date(date.year - 1, 07, 01)
+        FY_end = datetime.date(date.year, 06, 30)
         return self.prices[FY_start:FY_end]
 
-    def average_price(self, year):
-        prices = self.prices_FY(year)
+    def average_price(self, date):
+        prices = self.prices_FY(date)
         return prices["Close"].mean()
 
-    def high_price(self, year):
-        prices = self.prices_FY(year)
+    def high_price(self, date):
+        prices = self.prices_FY(date)
         return prices["High"].max()
 
-    def low_price(self, year):
-        prices = self.prices_FY(year)
+    def low_price(self, date):
+        prices = self.prices_FY(date)
         return prices["Low"].min()
 
-    def stddev_price(self, year):
-        prices = self.prices_FY(year)
+    def stddev_price(self, date):
+        prices = self.prices_FY(date)
         return prices["Close"].std()
 
-    def price_table(self, years):
+    def price_table(self, dates):
         headings = ["Average" , "High", "Low" , "Std Dev"]
-        table = pandas.DataFrame(None, index = years, columns = headings, dtype = float)
-        for year in years:
-            table["Average"][year] = self.average_price(int(year))
-            table["High"][year] = self.high_price(int(year))
-            table["Low"][year] = self.low_price(int(year))
-            table["Std Dev"][year] = self.stddev_price(int(year))
+        table = pandas.DataFrame(None, index = dates, columns = headings, dtype = float)
+        for date in dates:
+            table["Average"][date] = self.average_price(date)
+            table["High"][date] = self.high_price(date)
+            table["Low"][date] = self.low_price(date)
+            table["Std Dev"][date] = self.stddev_price(date)
         return table
 
+
+
+def makeDatetime(date_string):
+
+    date_formats = ["%Y", "%d-%b-%Y"]
+
+    for format in date_formats:
+        try:
+            date = datetime.datetime.strptime(date_string, format)
+        except ValueError:
+            continue
+        else:
+            return date
+
+    raise ValueError("Unknown date format")
 
 
