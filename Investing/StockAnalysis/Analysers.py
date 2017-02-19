@@ -1,16 +1,18 @@
 import pandas
 import math
 import datetime
+from dateutil.relativedelta import relativedelta
 import warnings
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
-from DataHandling.Downloads import Storage, Financials, PriceHistory, WSJscraper, XLSio, WebDownloader, MissingStatementEntryError, InsufficientDataError
+from DataHandling.Downloads import Storage, Financials, PriceHistory, ValuationSummary, Valuations, WSJscraper, XLSio, WebDownloader, MissingStatementEntryError, InsufficientDataError
 
 from multiprocessing import Process, Queue, Pool
 
 
 # TODO - REFINEMENTS
+# Note VSC has updated financials (for Dec 2015), will be a good test case to see if updating works.
 # Growth multiple doesn't seem to work well. Sometimes is higher than appears justified.
 # Add stock blacklist to avoid cycling through those with errors every time.
 
@@ -34,6 +36,7 @@ from multiprocessing import Process, Queue, Pool
 # Data not available: KMD, KNH, MEZ, MPP, NEC, NPX, SNC, SFL, TGZ
 
 # TODO - FEATURES
+# Update financials for new reporting period.
 # Add Book Valuations.
 # DONE - Parallel processing of valuations.
 # DONE - Update valuations based on latest prices only.
@@ -91,37 +94,20 @@ def storeValuationSummaryBrief(tickers = None):
     print(str(len(summary)) + " Succeeded")
     return errors
 
-def buildFinancialAnalyst(ticker, period = "annual", storage_dir = "D:\\Investing\\Data"):
+def buildFinancialAnalyst(ticker, storage_dir = "D:\\Investing"):
     store = Storage(storage_dir)
-    resource = store.load(Financials(ticker, period))
-    income = IncomeStatement(**resource.statements["income"])
-    balance = BalanceSheet(**resource.statements["balance"])
-    cashflow = CashflowStatement(**resource.statements["cashflow"])
+    annual = store.load(Financials(ticker, "annual"))
+    interim = store.load(Financials(ticker, "interim"))
+    income = IncomeStatement(annual, interim)
+    balance = BalanceSheet(annual, interim)
+    cashflow = CashflowStatement(annual, interim)
     return FinanceAnalyst(income, balance, cashflow)
 
-def buildPriceAnalyser(ticker, storage_dir = "D:\\Investing\\Data"):
+def buildPriceAnalyser(ticker, storage_dir = "D:\\Investing"):
     store = Storage(storage_dir)
     price_history = PriceHistory(ticker)
-    price_history = store.load(price_history)
-    return PriceAnalyser(**price_history.data) 
-
-def saveAnalysisToExcel(ticker):
-    results = Reporter(ticker)
-    store = Storage()
-    writer = pandas.ExcelWriter(store.excel(ticker + "analysis"))
-    results.summaryTable().to_excel(writer, "Summary")
-    results.financials.income.income_sheet.to_excel(writer, "Income")
-    assets = results.financials.balance.asset_sheet
-    liabilities = results.financials.balance.liabilities
-    assets.to_excel(writer, "Balance")
-    liabilities.to_excel(writer, "Balance", startrow = len(assets) + 1)
-    operating = results.financials.cashflow.operating
-    investing = results.financials.cashflow.investing
-    financing = results.financials.cashflow.financing
-    operating.to_excel(writer, "Cashflow")
-    investing.to_excel(writer, "Cashflow", startrow = len(operating) + 1)
-    financing.to_excel(writer, "Cashflow", startrow = len(operating) + len(investing) + 2)
-    writer.save()
+    store.load(price_history)
+    return PriceAnalyser(price_history.prices) 
 
 def getOneLineSummary(ticker):
     try:
@@ -140,7 +126,7 @@ def parallelSummary(tickers = None):
     store = Storage()
     if tickers is None:
         xls = XLSio(store)
-        xls.loadWorkbook("StockSummary")
+        xls.loadWorkbook("StockSummary.xlsx")
         xls.table = xls.table[xls.table["P/E Ratio (TTM)"].notnull()]
         tickers = xls.getTickers()
     
@@ -155,9 +141,10 @@ def parallelSummary(tickers = None):
         else:
             errors.append(result)
 
-    results = pandas.concat(results, axis = 1).T
-
-    results.to_excel(store.excel("ValuationSummary"))
+    valuation_summary = ValuationSummary(datetime.datetime.strftime(datetime.date.today(), "%Y%m%d"))
+    valuation_summary.summary = pandas.concat(results, axis = 1).T
+    store.save(valuation_summary)
+    
     print(str(len(errors)) + " Failed")
     print(str(len(results)) + " Succeeded")
 
@@ -166,10 +153,11 @@ def parallelSummary(tickers = None):
 def updatePrices(date = None):
     store = Storage()
     if date is None:
-        valuations = store.list_files(store.excel(), "Valuation")
-        dates = [val[-13:-5] for val in valuations]
+        files = store.list_files(store.valuationSummary(""), "Valuation")
+        dates = [val[-13:-5] for val in files]
         date = max(dates)
-    summary = pandas.read_excel(store.excel("ValuationSummary" + date), index_col = 0)
+    valuations = store.load(ValuationSummary(date))
+    summary = valuations.summary
     download = WebDownloader()
     new_prices = pandas.Series([download.currentPrice(ticker) for ticker in summary.index], index = summary.index)
     old_prices = summary["Current Price"]
@@ -178,8 +166,70 @@ def updatePrices(date = None):
     summary.loc[:, "Adjusted Value":"Dilution Value"] = new_values
     summary["Current Price"] = new_prices
     summary["Current PE"] = summary["Current EPS"] / summary["Current Price"]
-    summary.to_excel(store.excel("ValuationSummary" + date))
+    valuations.summary = summary
+    store.save(valuations)
     return summary
+
+
+def getValuations(ticker):
+    try:
+        reporter = Reporter(ticker)
+        result = reporter.share_values
+        result.insert(0, "ticker", reporter.ticker)
+    except MissingStatementEntryError as E:
+        result = "Error valuing {0}: {1}".format(ticker, E.message)
+    except InsufficientDataError as E:
+        result = "Error valuing {0}: {1}".format(ticker, E.message)
+    except Exception as E:
+        result = "Error valuing {0}: {1}".format(ticker, E.message)
+    
+    return result
+
+
+def collateValuations(tickers = None):
+    store = Storage()
+    if tickers is None:
+        xls = XLSio(store)
+        xls.loadWorkbook("StockSummary.xlsx")
+        xls.table = xls.table[xls.table["P/E Ratio (TTM)"].notnull()]
+        tickers = xls.getTickers()
+    
+    pool = Pool(processes = 8)
+    all_results = pool.map(getValuations, tickers)
+    errors = []
+    results = pandas.DataFrame()
+
+    for result in all_results:
+        if type(result) is pandas.DataFrame:
+            results = results.append(result)
+        else:
+            errors.append(result)
+
+    
+    print(str(len(errors)) + " Failed")
+    print(str(len(results["ticker"].unique())) + " Succeeded")
+
+    valuations = Valuations(datetime.datetime.strftime(datetime.date.today(), "%Y%m%d"))
+    valuations.summary = results
+    store.save(valuations)
+
+    return errors
+
+
+def collatePriceChanges(all_valuations, type, periods = [6, 12, 24]):
+
+    tickers = all_valuations["ticker"].unique()
+    downloader = WebDownloader()
+
+    results = pandas.DataFrame()
+
+    for ticker in tickers:
+        analyser = PriceAnalyser(downloader.priceHistory(ticker))
+        valuations = all_valuations[all_valuations["ticker"] == ticker]
+        results = results.append(analyser.price_appreciation(ticker, valuations, type, periods))
+        
+    return results
+        
 
 
 
@@ -199,6 +249,9 @@ class Reporter():
             self.price_analyser = buildPriceAnalyser(ticker)
             self.current_price = WebDownloader().currentPrice(ticker)
 
+
+    def financialsToExcel(self, writer):
+        self.financials.to_excel(writer)
 
     @property
     def index(self):
@@ -281,14 +334,15 @@ class Reporter():
 
     def valuationMetrics_table(self):
         table = pandas.DataFrame()
-        table["Mean Return (%)"] = self.pad_row(self.format_pct(self.EPVanalyser.ROIC_mean()))
-        table["Std Dev Return (%)"] = self.pad_row(self.format_pct(self.EPVanalyser.ROIC_std()))
-        table["opt F"] = self.pad_row(self.format_ratio(self.EPVanalyser.optF()))
-        table["act F"] = self.pad_row(self.format_ratio(self.EPVanalyser.actF()))
-        table["WACC base (%)"] = self.pad_row(self.format_pct(self.EPVanalyser.WACC_base()))
-        table["WACC adj. (%)"] = self.pad_row(self.format_pct(self.EPVanalyser.WACC()))
-        table["Growth mult."] = self.pad_row(self.format_ratio(self.EPVanalyser.growth_multiple().iloc[0]))
-        table["Dilution (%)"] = self.pad_row(self.format_pct(self.EPVanalyser.dilution()))
+        table["ROIC (%)"] = self.format_pct(self.EPVanalyser.ROIC())
+        table["Mean Return (%)"] = self.format_pct(self.EPVanalyser.ROIC_mean())
+        table["Std Dev Return (%)"] = self.format_pct(self.EPVanalyser.ROIC_std())
+        table["opt F"] = self.format_ratio(self.EPVanalyser.optF())
+        table["act F"] = self.format_ratio(self.EPVanalyser.actF())
+        table["WACC base (%)"] = self.format_pct(self.EPVanalyser.WACC_base())
+        table["WACC adj. (%)"] = self.format_pct(self.EPVanalyser.WACC())
+        table["Growth mult."] = self.format_ratio(self.EPVanalyser.growth_multiple())
+        table["Dilution (%)"] = self.format_pct(self.EPVanalyser.dilution())
         return table
 
     def shareValue_table(self):
@@ -300,7 +354,7 @@ class Reporter():
         return prices.round(3)
 
     def valuation_pct(self):
-        valuation = self.share_values.iloc[0]
+        valuation = self.share_values.iloc[-1]
         if self.current_price != 'N/A':
             valuation = (valuation / self.current_price - 1)
             valuation["All +ve"] = all(valuation > 0)
@@ -327,10 +381,10 @@ class Reporter():
             summary["Current Price"] = np.nan
         else:
             summary["Current Price"] = self.current_price
-        summary["Current EPS"] = self.EPS[0]
-        summary["Current Div"] = self.DPS[0]
+        summary["Current EPS"] = self.EPS[-1]
+        summary["Current Div"] = self.DPS[-1]
         summary["Average Div"] = self.DPS.mean()
-        summary = summary.append(self.valuationMetrics_table().iloc[0])
+        summary = summary.append(self.valuationMetrics_table().iloc[-1])
         valuation = self.valuation_pct().round(3)
         valuation = self.append_label(valuation, "Value")
         summary = summary.append(valuation)
@@ -340,8 +394,8 @@ class Reporter():
 
     def PE_ranges(self):
         PE_summary = pandas.Series(dtype = float)
-        PE_summary["Current PE"] = self.current_price / self.EPS[0]
-        PE_current = self.PE.iloc[0]
+        PE_summary["Current PE"] = self.current_price / self.EPS[-1]
+        PE_current = self.PE.iloc[-1]
         PE_current = self.append_label(PE_current, "PE Current Yr")
         PE_summary = PE_summary.append(PE_current)
         PE_summary["Average PE 5yr"] = self.PE.Average.mean()
@@ -354,21 +408,23 @@ class Reporter():
         table = pandas.DataFrame()
         mean_rtn = self.EPVanalyser.ROIC_mean()
         capital_cost = self.EPVanalyser.WACC()
-        growth_multiple = self.EPVanalyser.growth_multiple().iloc[0]
+        growth_multiple = self.EPVanalyser.growth_multiple()
         franchise_factor = (mean_rtn - capital_cost) / (capital_cost * mean_rtn)
         theoretical_PE = (1 / capital_cost) + franchise_factor * growth_multiple
-        book_value = self.EPVanalyser.book_value().iloc[0]
+        book_value = self.EPVanalyser.book_value()
+        earnings_value = self.EPVanalyser.per_share(self.EPV["Base"])
         franchise_value = (1 / capital_cost) * (mean_rtn - capital_cost) * (growth_multiple * book_value)
 
-        table["Mean Return (%)"] = self.pad_row(self.format_pct(mean_rtn))
-        table["Franchise Return (%)"] = self.pad_row(self.format_pct(mean_rtn))
-        table["WACC base (%)"] = self.pad_row(self.format_pct(self.EPVanalyser.WACC_base()))
-        table["WACC adj. (%)"] = self.pad_row(self.format_pct(capital_cost))
-        table["Growth mult."] = self.pad_row(self.format_ratio(growth_multiple))
-        table["Franchise Factor (FF)"] = self.pad_row(self.format_ratio(franchise_factor))
-        table["Theoretical PE"] = self.pad_row(self.format_ratio(theoretical_PE))
-        table["Book Value ($)"] = self.pad_row(self.format_ratio(book_value))
-        table["Franchise Value ($)"] = self.pad_row(self.format_ratio(franchise_value))
+        table["Mean Return (%)"] = self.format_pct(mean_rtn)
+        table["Franchise Return (%)"] = self.format_pct(mean_rtn)
+        table["WACC base (%)"] = self.format_pct(self.EPVanalyser.WACC_base())
+        table["WACC adj. (%)"] = self.format_pct(capital_cost)
+        table["Growth mult."] = self.format_ratio(growth_multiple)
+        table["Franchise Factor (FF)"] = self.format_ratio(franchise_factor)
+        table["Theoretical PE"] = self.format_ratio(theoretical_PE)
+        table["Book Value ($)"] = self.format_ratio(book_value)
+        table["Earnings Value ($)"] = self.format_ratio(earnings_value)
+        table["Franchise Value ($)"] = self.format_ratio(franchise_value)
 
         return table
 
@@ -393,13 +449,13 @@ class Reporter():
         return header
    
     def pad_row(self, value):
-        return pandas.Series([value] + ["-"] * (len(self.index) - 1), index = self.index)
+        return pandas.Series((["-"] * (len(self.index) - 1) + [value]), index = self.index)
 
-    def format_pct(self, number):
-        return round(100.0 * number, 2)
+    def format_pct(self, series):
+        return series.apply(lambda x: round(100.0 * x, 2))
 
-    def format_ratio(self, number):
-        return round(number, 2)
+    def format_ratio(self, series):
+        return series.apply(lambda x: round(x, 2))
 
     def valueHistogram(self):
         valuation = self.valuation_pct()
@@ -411,19 +467,26 @@ class Reporter():
         plt.show()
 
     def valueVSprice(self):
-        values = self.share_values[::-1]
-        xlabels = values.index.tolist()
-        prices = self.prices[::-1]
+        values = self.share_values
+        xlabels = [timestamp.strftime("%Y-%b") for timestamp in values.index]
+        prices = self.prices
         value_points = plt.plot(values, 'o')
-        ax = plt.axes()
-        ax.set_yticklabels(['$%s' % float('%.3g' % x) for x in ax.get_yticks()])
-        plt.legend(value_points, values.columns.tolist())
+        plt.legend(value_points, values.columns.tolist(), 
+                   loc = 'upper center', 
+                   fancybox = True, 
+                   bbox_to_anchor = (0.5, 1.05), 
+                   ncol = 4, 
+                   prop = {'size' : 10})
         plt.plot(prices["Average"], 'r')
         plt.plot(prices["High"], "r--")
         plt.plot(prices["Low"], "r--")
         plt.plot(len(xlabels) - 1, self.current_price, "rs")
+        ax = plt.axes()
+        ax.set_yticklabels(['$%s' % float('%.3g' % x) for x in ax.get_yticks()])
         plt.xlim(-0.5, len(xlabels) - 0.5)
         plt.xticks(range(len(xlabels)), xlabels)
+        plt.xticks(rotation = 45)
+        plt.subplots_adjust(bottom = 0.15)
         plt.show()
 
 
@@ -454,18 +517,13 @@ class EPVanalyser():
         return self.per_share(self.financials.shareholdersEquity())
 
     def ROIC(self):
-        return self.owner_earnings() / self.financials.investedCapital()
+        return self.financials.ROIC()
 
     def ROIC_mean(self):
-        ROIC = self.ROIC()
-        ROIC_trend = self.financials.series_trend(ROIC)
-        ROIC_current = ROIC_trend.iloc[0]
-        return ROIC_current - 1.65 * (self.ROIC_std() / (5.0 ** 0.5))
+        return self.financials.ROIC_mean()
 
     def ROIC_std(self):
-        ROIC = self.ROIC()
-        ROIC_trend = self.financials.series_trend(ROIC)
-        return (ROIC - ROIC_trend).std()
+        return self.financials.ROIC_std()
 
     def optF_theoretical(self):
         min_denom = 0.001
@@ -473,33 +531,38 @@ class EPVanalyser():
         min_F = 0.001
         mean = self.ROIC_mean()
         std = self.ROIC_std()
-        return max(adj_frac * mean / max(std ** 2 - mean ** 2, min_denom), min_F)
+        denom = std ** 2 - mean ** 2
+        denom[denom < min_denom] = min_denom
+        optF = adj_frac * mean / denom
+        optF[optF < min_F] = min_F
+        return optF
 
     def optF_simplified(self):
         mean = self.ROIC_mean()
         std = self.ROIC_std()
         adj_frac = 1.0 / 6.0
         min_F = 0.001
-        return max(adj_frac * mean / (std ** 2), min_F)
+        optF = adj_frac * mean / (std ** 2)
+        optF[optF < min_F] = min_F
+        return optF
 
     def optF_max_allowable_loss(self):
         mean = self.ROIC_mean()
         std = self.ROIC_std()
         three_sigma_loss = mean - 3 * std
-        if three_sigma_loss >= 0:
-            optF = 10.0
-        else:
-            optF = -1 / three_sigma_loss
+        optF = -1 / three_sigma_loss
+        optF[three_sigma_loss >= 0] = 10
         return optF
 
     def optF(self):
-        return min([self.optF_theoretical(), self.optF_simplified(), self.optF_max_allowable_loss()])
+        optF = pandas.DataFrame([self.optF_theoretical(), self.optF_simplified(), self.optF_max_allowable_loss()]).min()
+        return optF
 
     def actF(self):
         # Actual leverage is calculated as if all free cash is used to pay down debt.
-        assets = self.financials.totalAssets()[0]
-        debt = self.financials.totalDebt()[0]
-        net_cash = self.financials.netCash()[0]
+        assets = self.financials.totalAssets()
+        debt = self.financials.totalDebt()
+        net_cash = self.financials.netCash()
         return (assets - net_cash) / (assets - debt)
 
     def WACC(self, equity_cost = None):
@@ -512,23 +575,20 @@ class EPVanalyser():
         equity_cost = self.equity_base_cost + self.equity_premium
         return self.WACC(equity_cost)
 
-    def loss_probability(self, optF):
-        mean_rtn = self.ROIC_mean()
-        std_rtn = self.ROIC_std()
-        try:
-            probability = math.exp((-2.0 * optF * mean_rtn * self.acceptable_DD) / (optF * std_rtn) ** 2)
-        except OverflowError:
-            probability = 1
-        return probability
-
     def equity_cost(self):
         prob_opt = self.loss_probability(self.optF())
         prob_act = self.loss_probability(self.actF())
-        if prob_opt > 0.05:
-            leverage_ratio = 1
-        else:
-            leverage_ratio = prob_act / prob_opt
+        leverage_ratio = prob_act / prob_opt
+        leverage_ratio[prob_opt > 0.05] = 1
         return self.equity_base_cost + leverage_ratio * self.equity_premium
+
+    def loss_probability(self, optF):
+        mean_rtn = self.ROIC_mean()
+        std_rtn = self.ROIC_std()
+        exponent = (-2.0 * optF * mean_rtn * self.acceptable_DD) / (optF * std_rtn) ** 2
+        exponent[exponent > 10] = 10
+        probability = exponent.apply(math.exp)
+        return probability
 
     def growth_multiple(self, WACC = None, invest_pct = None, mean_rtn = None):
         if WACC is None:
@@ -545,30 +605,26 @@ class EPVanalyser():
         # Note that negative growth multiple is not desirable, as this would give positive EPV
         # when multiplied with negative earnings.
         invest_WACC_ratio = invest_pct / WACC
-        if isinstance(invest_WACC_ratio, pandas.Series):
-            invest_WACC_ratio[invest_WACC_ratio > 0.75] = 0.75
-            invest_WACC_ratio[(WACC > mean_rtn) & (invest_WACC_ratio < 0)] = 0.75
-        else:
-            invest_WACC_ratio = min(invest_WACC_ratio, 0.75)
-            if WACC > mean_rtn and invest_WACC_ratio < 0:
-                invest_WACC_ratio = 0.75
+        invest_WACC_ratio[invest_WACC_ratio > 0.75] = 0.75
+        invest_WACC_ratio[(WACC > mean_rtn) & (invest_WACC_ratio < 0)] = 0.75
         # Ratio of WACC to Return adjusted for neg return conditions.
-        if mean_rtn == 0:
-            WACC_rtn_ratio = 2
-        elif mean_rtn > 0:
-            WACC_rtn_ratio = WACC / mean_rtn
-        else:
-            WACC_rtn_ratio = max(abs((WACC - mean_rtn) / mean_rtn), 1.5)
-
-        if WACC_rtn_ratio > 1:
-            # If cost of capital (WACC) is greater than mean_rtn, then growth is bad.
-            # We want to return a multiple less than 1.
-            WACC_rtn_ratio = 1 / WACC_rtn_ratio
-            multiple = 1 / ((1 - invest_WACC_ratio * WACC_rtn_ratio) / (1 - invest_WACC_ratio))
-        else:
-            # The normal case
-            multiple = (1 - invest_WACC_ratio * WACC_rtn_ratio) / (1 - invest_WACC_ratio)
-
+        WACC_rtn_ratio = WACC / mean_rtn
+        zero_returns = (mean_rtn == 0)
+        if any(zero_returns):
+            WACC_rtn_ratio[zero_returns] = 2
+        neg_returns = (mean_rtn < 0)
+        if any(neg_returns):
+            WACC_rtn_ratio[neg_returns] = ((WACC[neg_returns] - mean_rtn[neg_returns]) / mean_rtn[neg_returns]).abs()
+            WACC_rtn_ratio[neg_returns & (WACC_rtn_ratio > 1.5)] = 1.5
+        
+        multiple = (1 - invest_WACC_ratio * WACC_rtn_ratio) / (1 - invest_WACC_ratio)
+        # If cost of capital (WACC) is greater than mean_rtn, then growth is bad.
+        # We want to return a multiple less than 1.
+        bad_ratio = (WACC_rtn_ratio > 1)
+        if any(bad_ratio):
+            bad_WACC_rtn_ratio = 1 / WACC_rtn_ratio[bad_ratio]
+            bad_invest_WACC_ratio = invest_WACC_ratio[bad_ratio]
+            multiple[bad_ratio] = 1 / ((1 - bad_invest_WACC_ratio * bad_WACC_rtn_ratio) / (1 - bad_invest_WACC_ratio))
         return multiple
 
     def EPV(self, earnings, WACC, growth, dilution):
@@ -610,23 +666,21 @@ class EPVanalyser():
     def EPV_minimum(self):
         earnings = self.earnings_table()
         earnings = earnings.min(axis = "columns")
-        WACC = max([self.WACC(), self.WACC_base()])
-        growth_multiple = self.growth_multiple()
-        if not isinstance(growth_multiple, float):
-            growth_multiple = growth_multiple[0]
-        growth = min(growth_multiple, 1)
-        dilution = min(1, self.dilution())
+        WACC = pandas.DataFrame([self.WACC(), self.WACC_base()]).max()
+        growth = self.growth_multiple()
+        growth[growth > 1] = 1
+        dilution = self.dilution()
+        dilution[dilution > 1] = 1
         return self.EPV(earnings, WACC, growth, dilution)
 
     def EPV_maximum(self):
         earnings = self.earnings_table()
         earnings = earnings.max(axis = "columns")
-        WACC = min([self.WACC(), self.WACC_base()])
-        growth_multiple = self.growth_multiple()
-        if not isinstance(growth_multiple, float):
-            growth_multiple = growth_multiple[0]
-        growth = max(growth_multiple, 1)
-        dilution = max(1, self.dilution())
+        WACC = pandas.DataFrame([self.WACC(), self.WACC_base()]).min()
+        growth = self.growth_multiple()
+        dilution = self.dilution()
+        growth[growth < 1] = 1
+        dilution[dilution < 1] = 1
         return self.EPV(earnings, WACC, growth, dilution)
 
     def earnings_table(self):
@@ -647,6 +701,13 @@ class FinanceAnalyst():
         self.cashflow = cashflow
         self.operating_cash_pct = 0.015
         self.tax_rate = 0.3
+        self.min_rolling_window = 3
+
+
+    def to_excel(self, writer):
+        self.income.to_excel(writer)
+        self.balance.to_excel(writer)
+        self.cashflow.to_excel(writer)
 
 
     def investedCapital(self):
@@ -682,8 +743,8 @@ class FinanceAnalyst():
 
     def dilutionGrowth(self):
         num_shares = self.numSharesDiluted()
-        yearly_shares_growth = num_shares.pct_change(periods = -1)
-        return yearly_shares_growth.mean()
+        yearly_dilution = self.series_pctchange(num_shares)
+        return self.rolling_mean(yearly_dilution)
 
     def reportedIncome(self):
         return self.income.net_to_common
@@ -696,6 +757,25 @@ class FinanceAnalyst():
         earnings_after_tax = EBIT_avg_unusuals * (1 - self.tax_rate)
         return earnings_after_tax + self.non_cash_expenses() - self.cash_expenses()
 
+    def ROIC(self):
+        return self.ownerEarnings() / self.investedCapital()
+
+    def ROIC_mean(self):
+        ROIC = self.ROIC()
+        ROIC_trend = self.series_trend(ROIC)
+        # Note: The mean is adjusted downwards based on the std dev divided by 
+        #  the sqrt of the number of observations.
+        #  the obs_adjust is the sqrt of the number of observations. Note that the
+        #  number of observations increases.
+        obs_adjust = [max(self.min_rolling_window, i) for i in range(1, len(ROIC) + 1)]
+        return ROIC_trend - 1.65 * (self.ROIC_std() / obs_adjust)
+
+    def ROIC_std(self):
+        ROIC = self.ROIC()
+        ROIC_trend = self.series_trend(ROIC)
+        ROIC_detrended = ROIC - ROIC_trend
+        return self.rolling_std(ROIC_detrended)
+
     def EBIT(self):
         return self.income.pretax - self.income.net_interest
 
@@ -707,7 +787,7 @@ class FinanceAnalyst():
         return self.income.DandA
 
     def cash_expenses(self):
-        # Refer Cash Expense Analysis - 20160514.xlsx
+        # Refer 'Cash Expense Analysis - 20160514.xlsx'
         acceptable_range = 0.3
         avg_DandA = pandas.DataFrame([self.income.DandA, self.expended_depreciation()]).mean()
         total_maintenance = self.maintenance_expense()
@@ -830,21 +910,57 @@ class FinanceAnalyst():
 
     def series_trend(self, series, dates = None):
         if dates is None:
-            dates = [makeDatetime(date) for date in series.index]
+            dates = series.index
         lm = LinearRegression()
-        dates_train = np.array([[makeDatetime(date).toordinal()] for date in series.index])
+        dates_train = np.array([[date.toordinal()] for date in series.index])
         lm.fit(dates_train, series.values)
         dates_predict = [[date.toordinal()] for date in dates]
-        return pandas.Series(lm.predict(dates_predict), index = series.index)
+        return pandas.Series(lm.predict(dates_predict), index = dates)
+
+    def rolling_trend(self, series):
+
+        lm = LinearRegression()
+        dates_train = np.array([[date.toordinal()] for date in series.index])
+
+        predicted = pandas.Series(0, index = series.index, dtype = float)
+        i = len(dates_train) - self.min_rolling_window
+
+        # The assumption below is that the series is ordered newest first.
+        # This is the case for WSJ data but not CMC data.
+        predicted.values[i:] = series.values[i:]
+
+        while i >= 0:
+            lm.fit(dates_train[i:], series.values[i:])
+            predicted.values[i] = lm.predict(dates_train[i])
+            i -= 1
+
+        return predicted
+
+    def rolling_mean(self, series):
+        # Since the series is stored with years in reverse order, the series needs
+        # to be flipped before reverse mean and then flipped back.
+        mean = pandas.rolling_mean(series, len(series), min_periods = self.min_rolling_window)
+        mean = mean.fillna(method = "backfill")
+        return mean
+
+    def rolling_std(self, series):
+        std = pandas.rolling_std(series, len(series), min_periods = self.min_rolling_window)
+        std = std.fillna(method = "backfill")
+        return std
 
     def series_diff(self, series):
-        delta = series.diff(periods = -1)
-        return delta.fillna(method = "pad")
+        delta = series.diff(periods = 1)
+        return delta.fillna(method = "backfill")
 
     def series_fillzeroes(self, series):
         series[series == 0] = np.nan
-        series.fillna(method = "pad")
+        series.fillna(method = "backfill")
         return series
+
+    def series_pctchange(self, series):
+        change = series.pct_change(periods = 1)
+        change.fillna(method = "backfill")
+        return change
 
 
 
@@ -865,13 +981,15 @@ class Statement():
     def convert_to_float(self, string):
         string = str(string)
         string = string.replace(",", "")
-        if string == "-":
+        if string == "-" or string == "--":
             string = "0.0"
         elif string.startswith("("):
             string = "-" + string.strip("()")
         return float(string)
 
     def get_units(self, sheet):
+        # index name is assumed to be of the form: 
+        #    'Fiscal year is <year_start>-<year_end>. All values in <currency> <units>.'
         sheet_label = sheet.index.name
         units_stated = sheet_label.split()[-1]
         units_stated = units_stated.strip(".")
@@ -880,13 +998,69 @@ class Statement():
                    "Billions": 1000000000}
         return convert[units_stated]
 
+    def get_fiscal_year_end(self, sheet):
+        # index name is assumed to be of the form: 
+        #    'Fiscal year is <year_start>-<year_end>. All values in <currency> <units>.'
+        sheet_label = sheet.index.name
+        fiscal_year = sheet_label.split(".")[0]
+        fiscal_year = fiscal_year.split("-")[-1]
+        return fiscal_year
+
+    def to_excel(self, writer):
+        raise NotImplementedError
+
+    def combine(self, name, annual, interim):
+        
+        fiscal_month = self.get_fiscal_year_end(annual.income)[0:3]
+        annual = getattr(annual, name)
+        interim = getattr(interim, name)
+        
+        half_years = [fiscal_month not in date for date in interim.columns]
+        annual.columns = pandas.Index([self.make_datetime(year + "-" + fiscal_month) for year in annual.columns])
+        interim.columns = pandas.Index([self.make_datetime(date) for date in interim.columns])
+
+        for row in interim.index:
+
+            if row not in self.annualized:
+                try:
+                    values = interim.loc[row].apply(self.convert_to_float)
+                except ValueError:
+                    pass
+                else:
+                    values = values + values.shift(-1).fillna(method = "pad")
+                    values = values.round(1)
+                    values = values.apply(str)
+                    interim.loc[row] = values
+
+        all_dates = annual.join(interim.loc[:, half_years])
+        all_dates = all_dates.sort_index(axis = 1)
+        return all_dates
+
+    def make_datetime(self, date_string):
+        # Formats for:  Year-mon     WSJ FY      WSJ HY      CMC summary
+        date_formats = [ "%Y-%b",     "%Y",    "%d-%b-%Y",     "%m/%y"]
+
+        for format in date_formats:
+            try:
+                date = datetime.datetime.strptime(date_string, format)
+            except ValueError:
+                continue
+            else:
+                return date
+
+        raise ValueError("Unknown date format")
 
 
 class IncomeStatement(Statement):
 
-    def __init__(self, income):
-        self.income_sheet = income
-        self.units = self.get_units(income)
+    def __init__(self, annual, interim):
+        self.annualized = ["Basic Shares Outstanding", "Diluted Shares Outstanding"]
+        self.income_sheet = self.combine("income", annual, interim)
+        self.units = self.get_units(self.income_sheet)
+        
+
+    def to_excel(self, writer):
+        self.income_sheet.to_excel(writer, "Income")
 
 
     @property
@@ -955,10 +1129,15 @@ class IncomeStatement(Statement):
 
 class BalanceSheet(Statement):
 
-    def __init__(self, assets, liabilities):
-        self.asset_sheet = assets
-        self.liabilities = liabilities
-        self.units = self.get_units(assets)
+    def __init__(self, annual, interim):
+        self.annualized = annual.assets.index.tolist() + annual.liabilities.index.tolist()
+        self.asset_sheet = self.combine("assets", annual, interim)
+        self.liabilities = self.combine("liabilities", annual, interim)
+        self.units = self.get_units(self.asset_sheet)
+
+    def to_excel(self, writer):
+        self.asset_sheet.to_excel(writer, "Balance")
+        self.liabilities.to_excel(writer, "Balance", startrow = len(self.asset_sheet) + 1)
 
 
     @property
@@ -1003,11 +1182,18 @@ class BalanceSheet(Statement):
 
 class CashflowStatement(Statement):
 
-    def __init__(self, operating, investing, financing):
-        self.operating = operating
-        self.investing = investing
-        self.financing = financing
-        self.units = self.get_units(operating)
+    def __init__(self, annual, interim):
+        self.annualized = ["None"]
+        self.operating = self.combine("operating", annual, interim)
+        self.investing = self.combine("investing", annual, interim)
+        self.financing = self.combine("financing", annual, interim)
+        self.units = self.get_units(self.operating)
+
+
+    def to_excel(self, writer):
+        self.operating.to_excel(writer, "Cashflow")
+        self.investing.to_excel(writer, "Cashflow", startrow = len(self.operating) + 1)
+        self.financing.to_excel(writer, "Cashflow", startrow = len(self.operating) + len(self.investing) + 2)
 
 
     @property
@@ -1051,7 +1237,6 @@ class PriceAnalyser():
         self.prices = prices
 
     def prices_FY(self, date):
-        date = makeDatetime(date)
         FY_start = datetime.date(date.year - 1, 07, 01)
         FY_end = datetime.date(date.year, 06, 30)
         return self.prices[FY_start:FY_end]
@@ -1082,20 +1267,65 @@ class PriceAnalyser():
             table["Std Dev"][date] = self.stddev_price(date)
         return table
 
+    def price_appreciation(self, ticker, valuations, type, periods):
+        '''
+        This method calculates the change in price for a given valuation period.
+        Inputs:
+        ticker - ticker of the stock to analyse
+        valuations - the Valuations storage resource object
+        type - the type of valuation to investigate (e.g. Base, Min, Adjusted).
+        periods - integer list of months to investigate (e.g. appreciate after 3, 6, 12 months)
+        '''
+        
+        columns = ["ticker", "value", "start"] + [str(period) for period in periods]
+        appreciation = pandas.DataFrame(np.nan, index = valuations.index, columns = columns)
+        for date in valuations[type].index:
+            valuation = valuations[type][date]
+            value_date = datetime.date(date.year, date.month, 20)
+            start = value_date + relativedelta(months = 2)
+            end = value_date + relativedelta(months = 8)
+            start_price = self.prices["Close"][start:end].quantile(0.2)
 
+            appreciation.loc[date, "ticker"] = ticker
+            appreciation.loc[date, "value"] = valuation
+            appreciation.loc[date, "start"] = start_price
 
-def makeDatetime(date_string):
+            for period in periods:
+                period_start = start + relativedelta(months = period)
+                period_end = end + relativedelta(months = period)
+                appreciation.loc[date, str(period)] = self.prices["Close"][period_start:period_end].median()
 
-    date_formats = ["%Y", "%d-%b-%Y"]
+        return appreciation
 
-    for format in date_formats:
-        try:
-            date = datetime.datetime.strptime(date_string, format)
-        except ValueError:
-            continue
+    def plotPriceMovesVsValue(self, price_moves, periods, segments = 6, upper_ratio = 10, lower_ratio = 0, ylim = [-0.5, 1]):
+
+        pct_moves = price_moves.copy()
+        pct_moves["start"] = price_moves["start"] / price_moves["value"]
+        pct_moves.loc[:, periods] = price_moves.loc[:, periods].div(price_moves["start"], axis = 'index') - 1
+        pct_moves = pct_moves[pct_moves["start"] > lower_ratio]
+        pct_moves = pct_moves[pct_moves["start"] < upper_ratio]
+
+        cut_factors = pandas.qcut(pct_moves["start"], segments)
+        xlabels = cut_factors.cat.categories.tolist()
+        figure = pct_moves.boxplot(column = periods, by = cut_factors)
+        if isinstance(figure, np.ndarray):
+            for ax in figure.reshape(-1):
+                ax.set_ylim(ylim)
+                ax.set_xlabel("")
+                ax.set_xticklabels(xlabels, rotation = 45, fontsize = 10, ha = "right")
+                ax.set_title("")
+                fig = ax.get_figure()
+                fig.suptitle("")
         else:
-            return date
+            plt.ylim(ylim)
+            plt.xlabel("")
+            plt.xticks(rotation = 45, fontsize = 10, ha = "right")
+            fig = figure.get_figure()
+            fig.suptitle("")
+        plt.title("")
+        plt.subplots_adjust(bottom = 0.15)
+        plt.show()
 
-    raise ValueError("Unknown date format")
+
 
 

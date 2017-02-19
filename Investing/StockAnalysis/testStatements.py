@@ -9,8 +9,8 @@ class Test_Statements(unittest.TestCase):
 
     def setUp(self):
         data_folder = "..\\testData\\"
-        self.asset_sheet = pandas.read_pickle(data_folder + "GNG\\GNGassets.pkl")
-        self.liabilities = pandas.read_pickle(data_folder + "GNG\\GNGliabilities.pkl")
+        self.asset_sheet = pandas.read_pickle(data_folder + "GNG\\Financials\\GNGassets.pkl")
+        self.liabilities = pandas.read_pickle(data_folder + "GNG\\Financials\\GNGliabilities.pkl")
         self.years = ["2015", "2014", "2013", "2012", "2011"]
 
         self.zero_series = pandas.Series([0.0, 0.0, 0.0, 0.0, 0.0], index = self.years)
@@ -43,6 +43,11 @@ class Test_Statements(unittest.TestCase):
         expected = expected * (self.statement.units / 1000)
         actual = self.statement.get_row(self.asset_sheet, line_item)
         self.assertTrue(actual.equals(expected))
+
+    def test_StatementFindsFiscalYearEnd(self):
+        expected_year_end = "June"
+        self.assertEqual(self.statement.get_fiscal_year_end(self.asset_sheet), expected_year_end)
+
 
 
 class Test_BalanceSheet(unittest.TestCase):
