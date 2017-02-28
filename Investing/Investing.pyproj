@@ -23,7 +23,11 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
+    <Compile Include="DataHandling\DbWrapper.py" />
     <Compile Include="DataHandling\Downloads.py">
+      <SubType>Code</SubType>
+    </Compile>
+    <Compile Include="DataHandling\testDbWrapper.py">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="DataHandling\__init__.py">
