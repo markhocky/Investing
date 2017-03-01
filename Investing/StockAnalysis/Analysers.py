@@ -1020,7 +1020,6 @@ class Statement():
         interim.columns = pandas.Index([self.make_datetime(date) for date in interim.columns])
 
         for row in interim.index:
-
             if row not in self.annualized:
                 try:
                     values = interim.loc[row].apply(self.convert_to_float)

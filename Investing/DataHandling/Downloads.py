@@ -672,7 +672,7 @@ class WSJscraper():
 
 class YahooDataDownloader():
     '''
-    Uses the Pandas data functionality to download data and handle local storage.
+    Uses the Pandas data functionality to download data.
     '''
     def priceHistory(self, ticker, start = None, end = None):
         if start is None:

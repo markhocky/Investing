@@ -13,6 +13,7 @@ class Company(Base):
 class Statement(Base):
     '''
     Statements records are the statements which can be generated for a company.
+    For example: Income, Balance, Valuation.
     '''
     __tablename__ = 'statement'
     
@@ -22,7 +23,7 @@ class Statement(Base):
 class LineItem(Base):
     '''
     LineItems specify entries which may exist in a statement.
-    For example, Revenue, EBIT.
+    For example: Revenue, EBIT.
     The additive field specifies whether the item is additive: True (income)
     or negative: False (expense).
     '''
