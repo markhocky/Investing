@@ -1,7 +1,9 @@
-from sqlalchemy import Column, ForeignKey, Integer, Numeric, String, Boolean, Date, create_engine
+from sqlalchemy import Column, ForeignKey, Integer, Float, String, Boolean, Date, create_engine
 from sqlalchemy.orm import relationship, backref, sessionmaker
+from sqlalchemy.orm.exc import NoResultFound
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import date
+from pandas import DataFrame
 
 Base = declarative_base()
 
@@ -10,6 +12,8 @@ class Company(Base):
 
     ticker = Column(String(10), primary_key = True)
     name = Column(String(250), nullable = False)
+    sector = Column(String(50))
+    industry_group = Column(String(50))
     
 class Statement(Base):
     '''
@@ -25,14 +29,18 @@ class LineItem(Base):
     '''
     LineItems specify entries which may exist in a statement.
     For example, Revenue, EBIT.
-    The additive field specifies whether the item is additive: True (income)
+    The income field specifies whether the item is ingoing or outgoing: True (income)
     or negative: False (expense).
+    The cumulative field specifies whether the item accumulates over successive
+    reporting periods. E.g. revenue is cumulative, whereas assets are not. This
+    is used when converting from half yearly to annual values.
     '''
     __tablename__ = 'line_item'
 
     id = Column(Integer, primary_key = True)
     name = Column(String(250), nullable = False)
-    additive = Column(Boolean)
+    income = Column(Boolean)
+    cumulative = Column(Boolean)
     companies = relationship("Company", secondary = "statement_fact")
 
 
@@ -57,8 +65,8 @@ class StatementFact(Base):
 
     ticker = Column(String(10), ForeignKey('company.ticker'), primary_key = True)
     line_item_id = Column(Integer, ForeignKey('line_item.id'), primary_key = True)
-    date = Column(Date, nullable = False)
-    value = Column(Numeric)
+    date = Column(Date, nullable = False, primary_key = True)
+    value = Column(Float)
     company = relationship(Company, backref = backref("line_item_assoc"))
     line_item = relationship(LineItem, backref = backref("company_assoc"))
     
@@ -70,21 +78,28 @@ def buildTestDB():
 
         db_session = sessionmaker(bind = engine)
         session = db_session()
+        
+        mld = Company(ticker = "MLD", name = "MACA Ltd")
+        ccp = Company(ticker = "CCP", name = "Credit Corp")
+        session.add(mld)
+        session.add(ccp)
 
-
-        session.add(Company(ticker = "MLD", name = "MACA Ltd"))
-        session.add(Company(ticker = "CCP", name = "Credit Corp"))
-
-        session.add(Statement(type = "Income"))
-        session.add(Statement(type = "Balance"))
-
-        session.add(LineItem(name = "Revenue", additive = True))
-        session.add(LineItem(name = "Expenses", additive = False))
+        income = Statement(type = "Income")
+        balance =  Statement(type = "Balance")
+        session.add(income)
+        session.add(balance)
+        
+        revenue = LineItem(name = "Revenue", income = True)
+        session.add(revenue)
+        expenses = LineItem(name = "Expenses", income = False)
+        session.add(expenses)
         session.add(StatementItem(statement = income, line_item = revenue, row_num = 1))
         session.add(StatementItem(statement = income, line_item = expenses, row_num = 2))
-
-        session.add(LineItem(name = "Assets"))
-        session.add(LineItem(name = "Liabilities"))
+        
+        assets = LineItem(name = "Assets")
+        session.add(assets)
+        liab = LineItem(name = "Liabilities")
+        session.add(liab)
         session.add(StatementItem(statement = balance, line_item = assets, row_num = 1))
         session.add(StatementItem(statement = balance, line_item = liab, row_num = 2))
 
@@ -98,15 +113,49 @@ def buildTestDB():
         session.add(StatementFact(company = ccp, line_item = assets, date = date(2017, 02, 25), value = 5400))
         session.add(StatementFact(company = ccp, line_item = liab, date = date(2017, 02, 25), value = 4300))
 
-        self.session.commit()
+        session.commit()
         return session
 
 
-def queryStatement(session, statement_type, ticker):
-    result = session.query(StatementItem.row_num, StatementFact.date, LineItem.name, LineItem.additive, StatementFact.value).filter(
+
+
+class DbInterface(object):
+
+    def __init__(self, session):
+        self.session = session
+
+    
+    def getCompany(self, ticker):
+        try:
+            company = self.session.query(Company).filter(Company.ticker == ticker).one()
+        except NoResultFound as e:
+            raise ValueError(ticker + " does not exist")
+        return company
+
+    def getLineItem(self, type):
+        try:
+            line = self.session.query(LineItem).filter(LineItem.name == type).one()
+        except NoResultFound as e:
+            raise ValueError(type + " does not exist")
+        return line
+
+    def addStatementFact(self, ticker, type, date, value):
+        company = self.getCompany(ticker)
+        line = self.getLineItem(type)
+        self.session.add(StatementFact(company = company, line_item = line, date = date, value = value))
+        self.session.commit()
+        
+
+
+    def getStatement(self, statement_type, ticker):
+        result = self.session.query(StatementItem.row_num, StatementFact.date, LineItem.name, LineItem.cumulative, StatementFact.value).filter(
         StatementFact.line_item_id == LineItem.id).filter(
         LineItem.id == StatementItem.line_item_id).filter(
         StatementItem.statement.has(Statement.type == statement_type)).filter(
         StatementFact.company.has(Company.ticker == ticker)).all()
-    return result
+        df = DataFrame(result)
+        df.sort_values(by = 'row_num')
+        return df.pivot(index = 'date', columns = 'name', values = 'value')
+    
 
+db = DbInterface(buildTestDB())

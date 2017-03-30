@@ -6,7 +6,7 @@
     <ProjectGuid>9988ac46-c42d-44ca-b068-df0f5a24bddd</ProjectGuid>
     <ProjectHome>
     </ProjectHome>
-    <StartupFile>StockAnalysis\Analysers.py</StartupFile>
+    <StartupFile>DataHandling\Downloads.py</StartupFile>
     <SearchPath>
     </SearchPath>
     <WorkingDirectory>.</WorkingDirectory>
