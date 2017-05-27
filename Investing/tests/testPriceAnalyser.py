@@ -9,8 +9,8 @@ class Test_PriceAnalyser(unittest.TestCase):
     def setUp(self):
         data_folder = "..\\testData\\"
         self.prices = pandas.read_pickle(data_folder + "GNG\\GNGprices.pkl")
-        FY_start = datetime.date(2014, 07, 01)
-        FY_end = datetime.date(2015, 06, 30)
+        FY_start = datetime.date(2014, 7, 1)
+        FY_end = datetime.date(2015, 6, 30)
         self.FY_2015 = self.prices[FY_start:FY_end]
         self.analyser = PriceAnalyser(self.prices)
 

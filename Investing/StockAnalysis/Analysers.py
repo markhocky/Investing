@@ -1236,8 +1236,8 @@ class PriceAnalyser():
         self.prices = prices
 
     def prices_FY(self, date):
-        FY_start = datetime.date(date.year - 1, 07, 01)
-        FY_end = datetime.date(date.year, 06, 30)
+        FY_start = datetime.date(date.year - 1, 7, 1)
+        FY_end = datetime.date(date.year, 6, 30)
         return self.prices[FY_start:FY_end]
 
     def average_price(self, date):
