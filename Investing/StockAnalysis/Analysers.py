@@ -11,38 +11,38 @@ from DataHandling.Downloads import Storage, Financials, PriceHistory, ValuationS
 from multiprocessing import Process, Queue, Pool
 
 
-# TODO - REFINEMENTS
-# Note VSC has updated financials (for Dec 2015), will be a good test case to see if updating works.
-# Growth multiple doesn't seem to work well. Sometimes is higher than appears justified.
-# Add stock blacklist to avoid cycling through those with errors every time.
+# REFINEMENTS
+# TODO - Note VSC has updated financials (for Dec 2015), will be a good test case to see if updating works.
+# TODO - Growth multiple doesn't seem to work well. Sometimes is higher than appears justified.
+# TODO - Add stock blacklist to avoid cycling through those with errors every time.
 
-# TODO - REFACTORING
-# Move series manipulations (trend, diff etc) to object derived from pandas.Series
-# Statement can create this object on get_row
+# REFACTORING
+# TODO - Move series manipulations (trend, diff etc) to object derived from pandas.Series
+# TODO - Statement can create this object on get_row
 
-# TODO - FIXES
-# Improve error handling in storeValuationSummaryBrief
-# Apply appropriate corrections when not all years have reported values.
-# Apply to: Capital Base, Total Assets
+# FIXES
+# TODO - Improve error handling in storeValuationSummaryBrief
+# TODO - Apply appropriate corrections when not all years have reported values.
+# TODO - Apply to: Capital Base, Total Assets
 #
 # Errors:
-# Account for USD reported accounts e.g. RMD
+# TODO - Account for USD reported accounts e.g. RMD
 #
 # Aliases:
-# "Cash & Short Term Investments" - "Cash Only" (AMP, IAG, ISU, MPL, QBE, SUN)
-# Handle statements for financial companies with no "Sales/Revenue":
-# ANZ, ABA, BOQ, BEN, CBA, GMY, IQE, KMD, KNH, MQG, WBC
+# TODO - "Cash & Short Term Investments" - "Cash Only" (AMP, IAG, ISU, MPL, QBE, SUN)
+# TODO - Handle statements for financial companies with no "Sales/Revenue":
+# TODO - ANZ, ABA, BOQ, BEN, CBA, GMY, IQE, KMD, KNH, MQG, WBC
 #
-# Data not available: KMD, KNH, MEZ, MPP, NEC, NPX, SNC, SFL, TGZ
+# TODO - Data not available: KMD, KNH, MEZ, MPP, NEC, NPX, SNC, SFL, TGZ
 
-# TODO - FEATURES
-# Update financials for new reporting period.
-# Add Book Valuations.
+# FEATURES
+# TODO - Update financials for new reporting period.
+# TODO - Add Book Valuations.
 # DONE - Parallel processing of valuations.
 # DONE - Update valuations based on latest prices only.
-# Analysis of financial stocks - Banks and Insurance.
-# Add data from analyst forecast earnings.
-# Add data from competitors and industry.
+# TODO - Analysis of financial stocks - Banks and Insurance.
+# TODO - Add data from analyst forecast earnings.
+# TODO - Add data from competitors and industry.
 
 
 def retrieveOverviewData(storage_dir, headings = None):
@@ -61,95 +61,7 @@ def retrieveOverviewData(storage_dir, headings = None):
     xls.updateTable(new_data)
     xls.saveAs("StockSummary")
 
-def storeValuationSummaryBrief(tickers = None):
-    store = Storage()
-    if tickers is None:
-        xls = XLSio(store)
-        xls.loadWorkbook("StockSummary")
-        xls.table = xls.table[xls.table["P/E Ratio (TTM)"].notnull()]
-        tickers = xls.getTickers()
-    summary = {}
-    count = 1.0
-    errors = {}
-    print("Assessing " + str(len(tickers)) + " companies")
-    for ticker in tickers:
-        try:
-            reporter = Reporter(ticker)
-            summary[ticker] = reporter.oneLineValuation()
-        except MissingStatementEntryError as E:
-            errors[ticker] = E.message
-        except InsufficientDataError as E:
-            errors[ticker] = E.message
-        except Exception as E:
-            errors[ticker] = E.message
-        if count % max(len(tickers) / 4, 1) == 0:
-            pct_complete = round(100.0 * count / len(tickers))
-            print(str(pct_complete) + "% complete")    
-        count += 1
-    
-    index = summary.items()[0][1].index        
-    summary = pandas.DataFrame(summary, index = index).T
-    summary.to_excel(store.excel("ValuationSummary"))
-    print(str(len(errors)) + " Failed")
-    print(str(len(summary)) + " Succeeded")
-    return errors
-
-def buildFinancialAnalyst(ticker, storage_dir = "D:\\Investing"):
-    store = Storage(storage_dir)
-    annual = store.load(Financials(ticker, "annual"))
-    interim = store.load(Financials(ticker, "interim"))
-    income = IncomeStatement(annual, interim)
-    balance = BalanceSheet(annual, interim)
-    cashflow = CashflowStatement(annual, interim)
-    return FinanceAnalyst(income, balance, cashflow)
-
-def buildPriceAnalyser(ticker, storage_dir = "D:\\Investing"):
-    store = Storage(storage_dir)
-    price_history = PriceHistory(ticker)
-    store.load(price_history)
-    return PriceAnalyser(price_history.prices) 
-
-def getOneLineSummary(ticker):
-    try:
-        reporter = Reporter(ticker)
-        result = reporter.oneLineValuation()
-    except MissingStatementEntryError as E:
-        result = "Error valuing {0}: {1}".format(ticker, E.message)
-    except InsufficientDataError as E:
-        result = "Error valuing {0}: {1}".format(ticker, E.message)
-    except Exception as E:
-        result = "Error valuing {0}: {1}".format(ticker, E.message)
-    
-    return result
-
-def parallelSummary(tickers = None):
-    store = Storage()
-    if tickers is None:
-        xls = XLSio(store)
-        xls.loadWorkbook("StockSummary.xlsx")
-        xls.table = xls.table[xls.table["P/E Ratio (TTM)"].notnull()]
-        tickers = xls.getTickers()
-    
-    pool = Pool(processes = 8)
-    all_results = pool.map(getOneLineSummary, tickers)
-    errors = []
-    results = []
-
-    for result in all_results:
-        if type(result) is pandas.Series:
-            results.append(result)
-        else:
-            errors.append(result)
-
-    valuation_summary = ValuationSummary(datetime.datetime.strftime(datetime.date.today(), "%Y%m%d"))
-    valuation_summary.summary = pandas.concat(results, axis = 1).T
-    store.save(valuation_summary)
-    
-    print(str(len(errors)) + " Failed")
-    print(str(len(results)) + " Succeeded")
-
-    return errors
-
+# TODO - Move price updates to Collator
 def updatePrices(date = None):
     store = Storage()
     if date is None:
@@ -171,51 +83,6 @@ def updatePrices(date = None):
     return summary
 
 
-def getValuations(ticker):
-    try:
-        reporter = Reporter(ticker)
-        result = reporter.share_values
-        result.insert(0, "ticker", reporter.ticker)
-    except MissingStatementEntryError as E:
-        result = "Error valuing {0}: {1}".format(ticker, E.message)
-    except InsufficientDataError as E:
-        result = "Error valuing {0}: {1}".format(ticker, E.message)
-    except Exception as E:
-        result = "Error valuing {0}: {1}".format(ticker, E.message)
-    
-    return result
-
-
-def collateValuations(tickers = None):
-    store = Storage()
-    if tickers is None:
-        xls = XLSio(store)
-        xls.loadWorkbook("StockSummary.xlsx")
-        xls.table = xls.table[xls.table["P/E Ratio (TTM)"].notnull()]
-        tickers = xls.getTickers()
-    
-    pool = Pool(processes = 8)
-    all_results = pool.map(getValuations, tickers)
-    errors = []
-    results = pandas.DataFrame()
-
-    for result in all_results:
-        if type(result) is pandas.DataFrame:
-            results = results.append(result)
-        else:
-            errors.append(result)
-
-    
-    print(str(len(errors)) + " Failed")
-    print(str(len(results["ticker"].unique())) + " Succeeded")
-
-    valuations = Valuations(datetime.datetime.strftime(datetime.date.today(), "%Y%m%d"))
-    valuations.summary = results
-    store.save(valuations)
-
-    return errors
-
-
 def collatePriceChanges(all_valuations, type, periods = [6, 12, 24]):
 
     tickers = all_valuations["ticker"].unique()
@@ -229,25 +96,140 @@ def collatePriceChanges(all_valuations, type, periods = [6, 12, 24]):
         results = results.append(analyser.price_appreciation(ticker, valuations, type, periods))
         
     return results
+
+
+class Collator():
+
+    def __init__(self, exchange, tickers):
+        self.tickers = tickers
+        self.store = Storage(exchange)
+        self.reporter = Reporter(None, Factory(exchange))
+
+    def collateValuations(self, num_processes = 8):
+        if self.tickers is None:
+            xls = XLSio(self.store)
+            xls.loadWorkbook("StockSummary.xlsx")
+            xls.table = xls.table[xls.table["P/E Ratio (TTM)"].notnull()]
+            self.tickers = xls.getTickers()
+    
+        pool = Pool(processes = num_processes)
+        all_results = pool.map(self.get_valuations, self.tickers)
+        errors = []
+        results = pandas.DataFrame()
+
+        for result in all_results:
+            if type(result) is pandas.DataFrame:
+                results = results.append(result)
+            else:
+                errors.append(result)
+
+    
+        print(str(len(errors)) + " Failed")
+        print(str(len(results["ticker"].unique())) + " Succeeded")
+
+        valuations = Valuations(datetime.datetime.strftime(datetime.date.today(), "%Y%m%d"))
+        valuations.summary = results
+        self.store.save(valuations)
+
+        return errors
+
+    def get_valuations(self, ticker):
+        try:
+            self.reporter.analyse(ticker)
+            result = self.reporter.share_values
+            result.insert(0, "ticker", ticker)
+        except MissingStatementEntryError as E:
+            result = "Error valuing {0}: {1}".format(ticker, E)
+        except InsufficientDataError as E:
+            result = "Error valuing {0}: {1}".format(ticker, E)
+        except Exception as E:
+            result = "Error valuing {0}: {1}".format(ticker, E)
+        return result
+
+
+    def parallelSummary(self, num_processes):
+        if self.tickers is None:
+            xls = XLSio(self.store)
+            xls.loadWorkbook("StockSummary.xlsx")
+            xls.table = xls.table[xls.table["P/E Ratio (TTM)"].notnull()]
+            self.tickers = xls.getTickers()
+    
+        pool = Pool(processes = num_processes)
+        all_results = pool.map(self.get_one_line_summary, self.tickers)
+        errors = []
+        results = []
+
+        for result in all_results:
+            if type(result) is pandas.Series:
+                results.append(result)
+            else:
+                errors.append(result)
+
+        valuation_summary = ValuationSummary(datetime.datetime.strftime(datetime.date.today(), "%Y%m%d"))
+        valuation_summary.summary = pandas.concat(results, axis = 1).T
+        self.store.save(valuation_summary)
+    
+        print(str(len(errors)) + " Failed")
+        print(str(len(results)) + " Succeeded")
+
+        return errors
+
+
+    def get_one_line_summary(self, ticker):
+        try:
+            self.reporter.analyse(ticker)
+            result = self.reporter.oneLineValuation()
+        except MissingStatementEntryError as E:
+            result = "Error valuing {0}: {1}".format(ticker, E)
+        except InsufficientDataError as E:
+            result = "Error valuing {0}: {1}".format(ticker, E)
+        except Exception as E:
+            result = "Error valuing {0}: {1}".format(ticker, E)
+        return result
+
         
 
+class Factory():
+
+    def __init__(self, exchange):
+        self.exchange = exchange
+        self.store = Storage(exchange)
+
+    def buildFinancialAnalyst(self, ticker):
+        annual = self.store.load(Financials(ticker, "annual"))
+        interim = self.store.load(Financials(ticker, "interim"))
+        income = IncomeStatement(annual, interim)
+        balance = BalanceSheet(annual, interim)
+        cashflow = CashflowStatement(annual, interim)
+        return FinanceAnalyst(income, balance, cashflow)
+
+    
+    def buildPriceAnalyser(self, ticker):
+        price_history = PriceHistory(ticker)
+        self.store.load(price_history)
+        return PriceAnalyser(price_history.prices) 
 
 
 class Reporter():
     
-    def __init__(self, ticker, analyse = True):
-        self.ticker = ticker
+    def __init__(self, ticker = None, factory = Factory("ASX")):
+        self.factory = factory
+
+        if ticker is not None:
+            self.analyse(ticker)
+
+    def analyse(self, ticker):
         self._index = None
         self._maintenance = None
         self._earnings = None
         self._EPV = None
         self._prices = None
         self._values = None
-        if analyse:
-            self.financials = buildFinancialAnalyst(ticker)
-            self.EPVanalyser = EPVanalyser(self.financials)
-            self.price_analyser = buildPriceAnalyser(ticker)
-            self.current_price = WebDownloader().currentPrice(ticker)
+        self.ticker = ticker
+        self.financials = self.factory.buildFinancialAnalyst(ticker)
+        self.EPVanalyser = EPVanalyser(self.financials)
+        self.price_analyser = self.factory.buildPriceAnalyser(ticker)
+        self.current_price = WebDownloader().currentPrice(ticker)
 
 
     def financialsToExcel(self, writer):
@@ -939,12 +921,12 @@ class FinanceAnalyst():
     def rolling_mean(self, series):
         # Since the series is stored with years in reverse order, the series needs
         # to be flipped before reverse mean and then flipped back.
-        mean = pandas.rolling_mean(series, len(series), min_periods = self.min_rolling_window)
+        mean = series.rolling(len(series), min_periods = self.min_rolling_window).mean()
         mean = mean.fillna(method = "backfill")
         return mean
 
     def rolling_std(self, series):
-        std = pandas.rolling_std(series, len(series), min_periods = self.min_rolling_window)
+        std = series.rolling(len(series), min_periods = self.min_rolling_window).std()
         std = std.fillna(method = "backfill")
         return std
 

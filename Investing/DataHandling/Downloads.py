@@ -9,6 +9,13 @@ from pandas_datareader import base as pd_base
 from bs4 import BeautifulSoup
 
 
+def getNyseTickers():
+    filename = "NYSEListedCompanies.xlsx"
+    nyse_table = pandas.read_excel(os.path.join(r'D:\Investing\Data', filename))
+    OK = (nyse_table.FalseTicker == "-") & (nyse_table.PriceErrors == "-") & (nyse_table.StatementsAvailable == "-")
+    return nyse_table.Symbol[OK]
+
+
 class WebDownloader():
     
     def __init__(self, exchange = "ASX"):
@@ -36,7 +43,7 @@ class WebDownloader():
                         statement.html = self.WSJ.load_page(ticker, statement.type, period)
                         if saving_financials:
                             try:
-                                financials.statements[statement] = scraper.getTables(statement.type, statement.html)
+                                financials.statements[statement.type] = scraper.getTables(statement.type, statement.html)
                             except Exception:
                                 saving_financials = False
                                 errors[ticker] = "Scraper error - " + " ".join([period, statement.type])
@@ -262,8 +269,14 @@ class Storage():
     def __init__(self, exchange = "ASX", root_folder = "D:\\Investing\\"):
         self.root = root_folder
         self.exchange = exchange
-        self.data = os.path.join(root_folder, "Data", self.exchange)
-        self.valuations = os.path.join(root_folder, "Valuations", self.exchange)
+
+    @property
+    def data(self):
+        return os.path.join(self.root, "Data", self.exchange)
+
+    @property
+    def valuations(self):
+        return os.path.join(self.root, "Valuations", self.exchange)
 
     def load(self, resource):
         folder = resource.selectFolder(self)
@@ -636,8 +649,8 @@ class WSJinternet():
 
 class WSJlocal(WSJinternet):
 
-    def __init__(self):
-        self.page_root = "D:\\Investing\\Data\\"
+    def __init__(self, exchange = "ASX"):
+        self.page_root = "D:\\Investing\\Data\\" + exchange + "\\"
         self.statement_pages = {"income"    :   "\\Financials\\<period>\\<ticker>income.html", 
                                 "balance"   :   "\\Financials\\<period>\\<ticker>balance.html",
                                 "cashflow"   :   "\\Financials\\<period>\\<ticker>cashflow.html"}
