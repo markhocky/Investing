@@ -13,6 +13,7 @@
     <OutputPath>.</OutputPath>
     <Name>Investing</Name>
     <RootNamespace>Investing</RootNamespace>
+    <InterpreterId>Global|ContinuumAnalytics|Anaconda36-64</InterpreterId>
   </PropertyGroup>
   <PropertyGroup Condition=" '$(Configuration)' == 'Debug' ">
     <DebugSymbols>true</DebugSymbols>
@@ -27,51 +28,55 @@
     <Compile Include="DataHandling\Downloads.py">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="DataHandling\testDbWrapper.py">
+    <Compile Include="tests\testDbWrapper.py">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="DataHandling\__init__.py">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="DataHandling\testDownloader.py">
+    <Compile Include="tests\testDownloader.py">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="StockAnalysis\__init__.py">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="StockAnalysis\testEPVanalyser.py">
+    <Compile Include="tests\testEPVanalyser.py">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="StockAnalysis\testPriceAnalyser.py">
+    <Compile Include="tests\testPriceAnalyser.py">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="StockAnalysis\testReporter.py">
+    <Compile Include="tests\testReporter.py">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="DataHandling\testScraper.py">
+    <Compile Include="tests\testScraper.py">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="StockAnalysis\testStatements.py">
+    <Compile Include="tests\testStatements.py">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="DataHandling\testStorage.py">
+    <Compile Include="tests\testStorage.py">
       <SubType>Code</SubType>
     </Compile>
-    <Compile Include="DataHandling\testXLSio.py">
+    <Compile Include="tests\testXLSio.py">
       <SubType>Code</SubType>
     </Compile>
     <Compile Include="StockAnalysis\Analysers.py" />
+    <Compile Include="tests\context.py">
+      <SubType>Code</SubType>
+    </Compile>
   </ItemGroup>
   <ItemGroup>
     <Folder Include="DataHandling\" />
+    <Folder Include="tests\" />
     <Folder Include="StockAnalysis\" />
+  </ItemGroup>
+  <ItemGroup>
+    <InterpreterReference Include="Global|ContinuumAnalytics|Anaconda36-64" />
   </ItemGroup>
   <PropertyGroup>
     <VisualStudioVersion Condition="'$(VisualStudioVersion)' == ''">10.0</VisualStudioVersion>
-    <PtvsTargetsFile>$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets</PtvsTargetsFile>
   </PropertyGroup>
-  <Import Condition="Exists($(PtvsTargetsFile))" Project="$(PtvsTargetsFile)" />
-  <Import Condition="!Exists($(PtvsTargetsFile))" Project="$(MSBuildToolsPath)\Microsoft.Common.targets" />
   <!-- Uncomment the CoreCompile target to enable the Build command in
        Visual Studio and specify your pre- and post-build commands in
        the BeforeBuild and AfterBuild targets below. -->
@@ -80,4 +85,5 @@
   </Target>
   <Target Name="AfterBuild">
   </Target>
+  <Import Project="$(MSBuildExtensionsPath32)\Microsoft\VisualStudio\v$(VisualStudioVersion)\Python Tools\Microsoft.PythonTools.targets" />
 </Project>

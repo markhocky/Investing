@@ -9,13 +9,51 @@ from pandas_datareader import base as pd_base
 from bs4 import BeautifulSoup
 
 
+def getNyseTickers():
+    filename = "NYSEListedCompanies.xlsx"
+    nyse_table = pandas.read_excel(os.path.join(r'D:\Investing\Data', filename))
+    OK = (nyse_table.FalseTicker == "-") & (nyse_table.PriceErrors == "-") & (nyse_table.StatementsAvailable == "-")
+    return nyse_table.Symbol[OK]
+
+
 class WebDownloader():
     
-    def __init__(self):
-        self.store = Storage()
-        self.WSJ = WSJinternet()
+    def __init__(self, exchange = "ASX"):
+        self.store = Storage(exchange)
+        self.WSJ = WSJinternet(exchange)
         self.Yahoo = YahooDataDownloader()
 
+    def saveFinancials(self, tickers):
+        scraper = WSJscraper()
+        errors = {}
+        count = 0
+        for period in ['annual', 'interim']:
+            for ticker in tickers:
+                ticker = ticker.strip()
+                count += 1
+                if count % 100 == 0:
+                    print("Running {} out of {}...".format(count, len(tickers)))
+                statements = [StatementWebpage(ticker, 'income', period), 
+                              StatementWebpage(ticker, 'balance', period), 
+                              StatementWebpage(ticker, 'cashflow', period)]
+                financials = Financials(ticker, period)
+                saving_financials = True
+                for statement in statements:
+                    try:
+                        statement.html = self.WSJ.load_page(ticker, statement.type, period)
+                        if saving_financials:
+                            try:
+                                financials.statements[statement.type] = scraper.getTables(statement.type, statement.html)
+                            except Exception:
+                                saving_financials = False
+                                errors[ticker] = "Scraper error - " + " ".join([period, statement.type])
+                            finally:
+                                self.store.save(statement)
+                    except Exception:
+                        errors[ticker] = "Page load error - " + " ".join([period, statement.type])
+                if saving_financials:
+                    self.store.save(financials)
+        return errors
 
     def updateFinancials(self, tickers, period):
         if tickers is None:
@@ -228,10 +266,17 @@ class XLSio():
 
 class Storage():
     
-    def __init__(self, root_folder = "D:\\Investing\\"):
+    def __init__(self, exchange = "ASX", root_folder = "D:\\Investing\\"):
         self.root = root_folder
-        self.data = os.path.join(root_folder, "Data")
-        self.valuations = os.path.join(root_folder, "Valuations")
+        self.exchange = exchange
+
+    @property
+    def data(self):
+        return os.path.join(self.root, "Data", self.exchange)
+
+    @property
+    def valuations(self):
+        return os.path.join(self.root, "Valuations", self.exchange)
 
     def load(self, resource):
         folder = resource.selectFolder(self)
@@ -428,6 +473,33 @@ class Financials(StorageResource):
         return len(self.income.columns)
 
 
+class StatementWebpage(StorageResource):
+
+    def __init__(self, ticker, type, period):
+        self.ticker = ticker
+        self.type = type
+        self.period = period
+        self.html = None
+
+    def selectFolder(self, store):
+        if self.period is "annual":
+            return store.annualFinancials(self)
+        else:
+            return store.interimFinancials(self)
+
+    def filename(self):
+        return self.ticker + self.type + ".html"
+
+    def loadFrom(self, file_path):
+        with open(file_path, 'r') as file:
+            self.html = file.read()
+        return self
+
+    def saveTo(self, file_path):
+        with open(file_path, 'w') as file:
+            file.write(str(self.html))
+
+
 class PriceHistory(StorageResource):
     
     def __init__(self, ticker):
@@ -537,8 +609,11 @@ class CMCpershare(StorageResource):
 
 class WSJinternet():
 
-    def __init__(self):
-        self.page_root = "http://quotes.wsj.com/AU/XASX/"
+    def __init__(self, exchange = "ASX"):
+        if exchange is "ASX":
+            self.page_root = "http://quotes.wsj.com/AU/XASX/"
+        elif exchange is "NYSE":
+            self.page_root = "http://quotes.wsj.com/"
         self.summary_pages = {"overview" : "", 
                               "financials" : "/financials"}
         self.statement_pages = {"income" : "/financials/<period>/income-statement", 
@@ -574,8 +649,8 @@ class WSJinternet():
 
 class WSJlocal(WSJinternet):
 
-    def __init__(self):
-        self.page_root = "D:\\Investing\\Data\\"
+    def __init__(self, exchange = "ASX"):
+        self.page_root = "D:\\Investing\\Data\\" + exchange + "\\"
         self.statement_pages = {"income"    :   "\\Financials\\<period>\\<ticker>income.html", 
                                 "balance"   :   "\\Financials\\<period>\\<ticker>balance.html",
                                 "cashflow"   :   "\\Financials\\<period>\\<ticker>cashflow.html"}
@@ -676,7 +751,7 @@ class YahooDataDownloader():
     '''
     def priceHistory(self, ticker, start = None, end = None):
         if start is None:
-            start = datetime.date(2010, 01, 01)
+            start = datetime.date(2010, 1, 1)
         if end is None:
             end = datetime.date.today()
         return pd_data.get_data_yahoo(ticker + ".AX", start, end)
