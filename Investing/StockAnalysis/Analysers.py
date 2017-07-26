@@ -4,7 +4,7 @@ import datetime
 from dateutil.relativedelta import relativedelta
 import warnings
 import numpy as np
-import matplotlib.pyplot as plt
+#import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 from DataHandling.Downloads import Storage, Financials, PriceHistory, ValuationSummary, Valuations, WSJscraper, XLSio, WebDownloader, MissingStatementEntryError, InsufficientDataError
 
