@@ -6,8 +6,14 @@ import warnings
 import numpy as np
 #import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
-from DataHandling.Downloads import Storage, Financials, PriceHistory, ValuationSummary, Valuations, WSJscraper, XLSio, WebDownloader, MissingStatementEntryError, InsufficientDataError
 
+import sys
+import os
+sys.path.append(os.path.join("C:\\Users", os.getlogin(), "Source\\Repos\\FinancialDataHandling\\financial_data_handling"))
+
+from formats.fundamentals import Financials, ValuationSummary, Valuations
+from formats.price_history import PriceHistory
+from store.file_system import Storage
 from multiprocessing import Process, Queue, Pool
 
 
@@ -138,10 +144,6 @@ class Collator():
             self.reporter.analyse(ticker)
             result = self.reporter.share_values
             result.insert(0, "ticker", ticker)
-        except MissingStatementEntryError as E:
-            result = "Error valuing {0}: {1}".format(ticker, E)
-        except InsufficientDataError as E:
-            result = "Error valuing {0}: {1}".format(ticker, E)
         except Exception as E:
             result = "Error valuing {0}: {1}".format(ticker, E)
         return result
@@ -179,10 +181,6 @@ class Collator():
         try:
             self.reporter.analyse(ticker)
             result = self.reporter.oneLineValuation()
-        except MissingStatementEntryError as E:
-            result = "Error valuing {0}: {1}".format(ticker, E)
-        except InsufficientDataError as E:
-            result = "Error valuing {0}: {1}".format(ticker, E)
         except Exception as E:
             result = "Error valuing {0}: {1}".format(ticker, E)
         return result
@@ -210,6 +208,7 @@ class Factory():
         return PriceAnalyser(price_history.prices) 
 
 
+# TODO Reporter analysis including current price needs updating - currently only uses last saved price, not latest price.
 class Reporter():
     
     def __init__(self, ticker = None, factory = Factory("ASX")):
@@ -219,6 +218,10 @@ class Reporter():
             self.analyse(ticker)
 
     def analyse(self, ticker):
+        '''
+        Analyse preps the reporter to assess the current value of the stock relative to 
+        the current price - e.g. to provide the full summary table, or one line summary.
+        '''
         self._index = None
         self._maintenance = None
         self._earnings = None
@@ -229,8 +232,23 @@ class Reporter():
         self.financials = self.factory.buildFinancialAnalyst(ticker)
         self.EPVanalyser = EPVanalyser(self.financials)
         self.price_analyser = self.factory.buildPriceAnalyser(ticker)
-        self.current_price = WebDownloader().currentPrice(ticker)
+        self.current_price = self.price_analyser.latest_price
 
+    def evaluate(self, ticker):
+        '''
+        Evaluate preps the report to just conduct the valuations with the currently available
+        financial data. This will allow EPV reporting but not an assessment of the current value
+        relative to the price. This is used for Valuations creation.
+        '''
+        self._index = None
+        self._maintenance = None
+        self._earnings = None
+        self._EPV = None
+        self._prices = None
+        self._values = None
+        self.ticker = ticker
+        self.financials = self.factory.buildFinancialAnalyst(ticker)
+        self.EPVanalyser = EPVanalyser(self.financials)
 
     def financialsToExcel(self, writer):
         self.financials.to_excel(writer)
@@ -1221,6 +1239,9 @@ class PriceAnalyser():
         FY_start = datetime.date(date.year - 1, 7, 1)
         FY_end = datetime.date(date.year, 6, 30)
         return self.prices[FY_start:FY_end]
+
+    def latest_price(self):
+        return self.prices["Close"].iloc[-1]
 
     def average_price(self, date):
         prices = self.prices_FY(date)

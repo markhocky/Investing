@@ -24,52 +24,22 @@
     <EnableUnmanagedDebugging>false</EnableUnmanagedDebugging>
   </PropertyGroup>
   <ItemGroup>
-    <Compile Include="DataHandling\DbWrapper.py" />
-    <Compile Include="DataHandling\Downloads.py">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="tests\testDbWrapper.py">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="DataHandling\__init__.py">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="tests\testDownloader.py">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="StockAnalysis\__init__.py">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="tests\testEPVanalyser.py">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="tests\testPriceAnalyser.py">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="tests\testReporter.py">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="tests\testScraper.py">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="tests\testStatements.py">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="tests\testStorage.py">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="tests\testXLSio.py">
-      <SubType>Code</SubType>
-    </Compile>
-    <Compile Include="StockAnalysis\Analysers.py" />
-    <Compile Include="tests\context.py">
-      <SubType>Code</SubType>
-    </Compile>
+    <Compile Include="analysis\financials.py" />
+    <Compile Include="analysis\__init__.py" />
+    <Compile Include="tests\context.py" />
+    <Compile Include="tests\testDbWrapper.py" />
+    <Compile Include="tests\testDownloader.py" />
+    <Compile Include="tests\testEPVanalyser.py" />
+    <Compile Include="tests\testPriceAnalyser.py" />
+    <Compile Include="tests\testReporter.py" />
+    <Compile Include="tests\testScraper.py" />
+    <Compile Include="tests\testStatements.py" />
+    <Compile Include="tests\testStorage.py" />
+    <Compile Include="tests\testXLSio.py" />
   </ItemGroup>
   <ItemGroup>
-    <Folder Include="DataHandling\" />
+    <Folder Include="analysis\" />
     <Folder Include="tests\" />
-    <Folder Include="StockAnalysis\" />
   </ItemGroup>
   <ItemGroup>
     <InterpreterReference Include="Global|ContinuumAnalytics|Anaconda36-64" />
