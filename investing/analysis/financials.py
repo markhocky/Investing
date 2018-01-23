@@ -4,15 +4,16 @@ import datetime
 from dateutil.relativedelta import relativedelta
 import warnings
 import numpy as np
-#import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 from sklearn.linear_model import LinearRegression
 
 import sys
 import os
 sys.path.append(os.path.join("C:\\Users", os.getlogin(), "Source\\Repos\\FinancialDataHandling\\financial_data_handling"))
 
-from formats.fundamentals import Financials, ValuationSummary, Valuations
+from formats.fundamentals import Financials, Valuations, StackedValuations
 from formats.price_history import PriceHistory
+from formats.information import ListedCompanies
 from store.file_system import Storage
 from multiprocessing import Process, Queue, Pool
 
@@ -74,7 +75,7 @@ def updatePrices(date = None):
         files = store.list_files(store.valuationSummary(""), "Valuation")
         dates = [val[-13:-5] for val in files]
         date = max(dates)
-    valuations = store.load(ValuationSummary(date))
+    valuations = store.load(Valuations("Summary", date))
     summary = valuations.summary
     download = WebDownloader()
     new_prices = pandas.Series([download.currentPrice(ticker) for ticker in summary.index], index = summary.index)
@@ -106,20 +107,23 @@ def collatePriceChanges(all_valuations, type, periods = [6, 12, 24]):
 
 class Collator():
 
-    def __init__(self, exchange, tickers):
-        self.tickers = tickers
+    def __init__(self, exchange, tickers = None):
         self.store = Storage(exchange)
+        if tickers is None:
+            listed_companies = ListedCompanies(self.store.exchange)
+            self.store.load(listed_companies)
+            tickers = listed_companies.OK_tickers
+        self.tickers = tickers
         self.reporter = Reporter(None, Factory(exchange))
 
-    def collateValuations(self, num_processes = 8):
-        if self.tickers is None:
-            xls = XLSio(self.store)
-            xls.loadWorkbook("StockSummary.xlsx")
-            xls.table = xls.table[xls.table["P/E Ratio (TTM)"].notnull()]
-            self.tickers = xls.getTickers()
-    
+    def collate_valuations(self, value_type, num_processes = 8):
+        """
+        This method is for calculating the specified valuations type using
+        parallel processing. The value_type should be one of those which returns
+        a stacked valuations table (e.g. EPV, EPS, Metrics).
+        """
         pool = Pool(processes = num_processes)
-        all_results = pool.map(self.get_valuations, self.tickers)
+        all_results = pool.map(self.__getattribute__("get_" + value_type), self.tickers)
         errors = []
         results = pandas.DataFrame()
 
@@ -128,34 +132,40 @@ class Collator():
                 results = results.append(result)
             else:
                 errors.append(result)
-
     
         print(str(len(errors)) + " Failed")
         print(str(len(results["ticker"].unique())) + " Succeeded")
 
-        valuations = Valuations(datetime.datetime.strftime(datetime.date.today(), "%Y%m%d"))
-        valuations.summary = results
+        valuations = StackedValuations(value_type, datetime.datetime.strftime(datetime.date.today(), "%Y%m%d"))
+        valuations.data = results
         self.store.save(valuations)
-
         return errors
 
-    def get_valuations(self, ticker):
+    # Valuations collation methods
+    def get_EPV(self, ticker):
+        return self.get_reporter_result("shareValue_table", ticker)
+
+    def get_EPS(self, ticker):
+        return self.get_reporter_result("EPS_table", ticker)
+
+    def get_Leibowitz(self, ticker):
+        return self.get_reporter_result("LeibowitzPEsummary", ticker)
+
+    def get_Metrics(self, ticker):
+        return self.get_reporter_result("valuationMetrics_table", ticker)
+
+    def get_reporter_result(self, reporter_method, ticker):
         try:
             self.reporter.analyse(ticker)
-            result = self.reporter.share_values
+            result = self.reporter.__getattribute__(reporter_method)()
             result.insert(0, "ticker", ticker)
         except Exception as E:
             result = "Error valuing {0}: {1}".format(ticker, E)
         return result
 
 
-    def parallelSummary(self, num_processes):
-        if self.tickers is None:
-            xls = XLSio(self.store)
-            xls.loadWorkbook("StockSummary.xlsx")
-            xls.table = xls.table[xls.table["P/E Ratio (TTM)"].notnull()]
-            self.tickers = xls.getTickers()
-    
+    # Valuation summary (i.e. only for latest period).
+    def collate_valuation_summary(self, num_processes):
         pool = Pool(processes = num_processes)
         all_results = pool.map(self.get_one_line_summary, self.tickers)
         errors = []
@@ -167,8 +177,8 @@ class Collator():
             else:
                 errors.append(result)
 
-        valuation_summary = ValuationSummary(datetime.datetime.strftime(datetime.date.today(), "%Y%m%d"))
-        valuation_summary.summary = pandas.concat(results, axis = 1).T
+        valuation_summary = Valuations("Summary", datetime.datetime.strftime(datetime.date.today(), "%Y%m%d"))
+        valuation_summary.data = pandas.concat(results, axis = 1).T
         self.store.save(valuation_summary)
     
         print(str(len(errors)) + " Failed")
@@ -201,11 +211,11 @@ class Factory():
         cashflow = CashflowStatement(annual, interim)
         return FinanceAnalyst(income, balance, cashflow)
 
-    
     def buildPriceAnalyser(self, ticker):
         price_history = PriceHistory(ticker)
         self.store.load(price_history)
-        return PriceAnalyser(price_history.prices) 
+        return PriceAnalyser(price_history.data) 
+
 
 
 # TODO Reporter analysis including current price needs updating - currently only uses last saved price, not latest price.
@@ -331,6 +341,10 @@ class Reporter():
     def earnings_table(self):
         table = self.EPVanalyser.earnings_table()
         return table.round(1)
+
+    def EPS_table(self):
+        values = self.EPVanalyser.per_share(self.earnings_table())
+        return values.round(3)
 
     def valuationMetrics_table(self):
         table = pandas.DataFrame()
@@ -1057,10 +1071,9 @@ class IncomeStatement(Statement):
         self.income_sheet = self.combine("income", annual, interim)
         self.units = self.get_units(self.income_sheet)
         
-
+        
     def to_excel(self, writer):
         self.income_sheet.to_excel(writer, "Income")
-
 
     @property
     def sales(self):
@@ -1240,6 +1253,7 @@ class PriceAnalyser():
         FY_end = datetime.date(date.year, 6, 30)
         return self.prices[FY_start:FY_end]
 
+    @property
     def latest_price(self):
         return self.prices["Close"].iloc[-1]
 
