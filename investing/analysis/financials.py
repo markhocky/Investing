@@ -1012,27 +1012,65 @@ class Statement():
                    "Billions": 1000000000}
         return convert[units_stated]
 
-    def get_fiscal_year_end(self, sheet):
+    def get_fiscal_end_month(self, sheet):
         # index name is assumed to be of the form: 
         #    'Fiscal year is <year_start>-<year_end>. All values in <currency> <units>.'
         sheet_label = sheet.index.name
-        fiscal_year = sheet_label.split(".")[0]
-        fiscal_year = fiscal_year.split("-")[-1]
-        return fiscal_year
+        fiscal_month = sheet_label.split(".")[0]
+        fiscal_month = fiscal_month.split("-")[-1]
+        return datetime.datetime.strptime(fiscal_month, '%B').month
 
     def to_excel(self, writer):
         raise NotImplementedError
 
     def combine(self, name, annual, interim):
         
-        fiscal_month = self.get_fiscal_year_end(annual.income)[0:3]
+        fiscal_month = self.get_fiscal_end_month(annual.income)
         annual = getattr(annual, name)
         interim = getattr(interim, name)
         
-        half_years = [fiscal_month not in date for date in interim.columns]
-        annual.columns = pandas.Index([self.make_datetime(year + "-" + fiscal_month) for year in annual.columns])
+        # Check the units for each sheet and make sure they match
+        # If units aren't supplied for one we try and infer from the other.
+        try:
+            annual_units = self.get_units(annual)
+        except AttributeError:
+            annual_units = None
+        try:
+            interim_units = self.get_units(interim)
+        except AttributeError:
+            interim_units = None
+
+        # If both units are none, there isn't much we can do
+        if annual_units is None and interim_units is None:
+            raise AttributeError('Unable to determine units')
+
+        # check the values are roughly of the same order
+        annual_values = annual.iloc[0].apply(self.convert_to_float)
+        interim_values = interim.iloc[0].apply(self.convert_to_float)
+        # get the matching values based on year and month for both
+        annual_index = [(date.year, date.month) for date in annual_values.index]
+        interim_index = [(date.year, date.month) for date in interim_values.index]
+        annual_values = annual_values[[ann_date in interim_index for ann_date in annual_index]]
+        interim_values = interim_values[[int_date in annual_index for int_date in interim_index]]
+        # TODO perform check on annual and interim values.
+        # TODO why are we doing the combining here and not in Financial Data Handling package?
+
+        # columns may be a string or datetime.
+        # For the interim sheet, we need to first check if it is in datetime format.
+        if isinstance(annual.columns[0], datetime.datetime):
+            # enforce that the month equals the fiscal end month.
+            if not annual.columns[0].month == fiscal_month:
+                annual.columns = pandas.Index([self.make_datetime(str(date.year) + "-" + str(fiscal_month)) for date in annual.columns])
+        else:
+            annual.columns = pandas.Index([self.make_datetime(year + "-" + str(fiscal_month)) for year in annual.columns])
+        # For the interim, because we aren't modifying the date we can let the make_datetime method check for us.
         interim.columns = pandas.Index([self.make_datetime(date) for date in interim.columns])
 
+        # Interim years are those where the month doesn't equal the fiscal year end period.
+        half_years = [fiscal_month != date.month for date in interim.columns]
+
+        # Interim values are converted to annualised figures
+        # unless they already are annualised (as indicated by self.annualized).
         for row in interim.index:
             if row not in self.annualized:
                 try:
@@ -1049,9 +1087,15 @@ class Statement():
         all_dates = all_dates.sort_index(axis = 1)
         return all_dates
 
+
     def make_datetime(self, date_string):
-        # Formats for:  Year-mon     WSJ FY      WSJ HY      CMC summary
-        date_formats = [ "%Y-%b",     "%Y",    "%d-%b-%Y",     "%m/%y"]
+        # If we already have a datetime object just return.
+        if isinstance(date_string, datetime.datetime):
+            return date_string\
+
+        # Otherwise we try to convert based on a list of known formats.
+        # Formats for:  Year-mon     Year-m#    WSJ FY      WSJ HY      CMC summary
+        date_formats = [ "%Y-%b",    "%Y-%m",    "%Y",    "%d-%b-%Y",     "%m/%y"]
 
         for format in date_formats:
             try:
